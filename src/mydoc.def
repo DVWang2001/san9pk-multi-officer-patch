@@ -1,0 +1,3 @@
+LIBRARY MyDoc
+EXPORTS
+  ?GetMyDocumentPath@@YAXPAD@Z = MyDoc_orig.?GetMyDocumentPath@@YAXPAD@Z
