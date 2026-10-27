@@ -174,7 +174,9 @@ static char hot_s[HOT_MAX][24]; static unsigned char hot_len[HOT_MAX]; static in
 #define HR_MAX 64
 typedef struct { DWORD obj; int l, t, r, b; } Hrect;
 static Hrect hot_rows[HR_MAX]; static int hot_rows_n; static volatile int hot_pending = -1;
-static void hot_clear(void) { hot_n = 0; hot_rows_n = 0; hot_pending = -1; }
+static DWORD appr[512]; static int appr_n; static DWORD cur_row_item;   // approved item objects (facilities / forces / ...) for pickers whose rows carry no officer name
+static int appr_has(DWORD p) { for (int i = 0; i < appr_n; i++) if (appr[i] == p) return 1; return 0; }
+static void hot_clear(void) { hot_n = 0; hot_rows_n = 0; hot_pending = -1; appr_n = 0; cur_row_item = 0; }
 static void hot_add(const char *s) { size_t l = s ? strlen(s) : 0; if (hot_n < HOT_MAX && l > 0 && l < 24) { memcpy(hot_s[hot_n], s, l + 1); hot_len[hot_n++] = (unsigned char)l; } }
 static int hot_has(const char *s, int n) { for (int i = 0; i < hot_n; i++) if (hot_len[i] == n && !memcmp(hot_s[i], s, n)) return 1; return 0; }
 static DWORD rec_tgt;                                         // recruit target chosen in the dialog (for the queued extra executors)
@@ -512,6 +514,69 @@ __asm__(".globl _tpick6_detour\n_tpick6_detour:\n"
         " pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n"
         " pushl 24(%esp)\n pushl %esi\n call _tpick6_wrap\n addl $32,%esp\n ret\n");
 extern void tpick6_detour(void);
+// ---- target pickers of the other commands: the facility list (0x506200: 奪取 / 燒夷 / 請求's 2nd target) and the generic list picker (0x57d980: 流言 / 勸降 / 請求 / 贈與) ----
+// A candidate target is approved when ANY idle officer of the city would succeed against it (advisor "good"); approved ones are sorted first and their rows recoloured.
+// code = kind * 16 + slot (slot 1 = first target [SCH.tgtoff], slot 2 = second target [SCH.tgt2off])
+static const struct { int off, ltype; } IDLE_TAB[10] = {{0, 0}, {0, 0}, {0, 0}, {0x6b4, 0x1c}, {0x6b4, 0x1c}, {0x6b8, 0x1d}, {0x6b4, 0x1d}, {0x120c, 0x1e}, {0x6b8, 0x1e}, {0x1558, 0x1e}};
+static int idle_kind(DWORD dlg, int kind, DWORD *ex, int max) {   // idle officers, built the way the command's own executor handler builds them
+    if (idle_provider != idle_default) return idle_provider(dlg, IDLE_TAB[kind].ltype, ex, max);   // offline tests
+    ((lst_build_t)0x4748a0)(dlg + IDLE_TAB[kind].off, IDLE_TAB[kind].ltype, 0);
+    return lst_items(dlg + IDLE_TAB[kind].off, ex, max);
+}
+static int tgt_pick_prep(int code, DWORD dlg, DWORD cand) {
+    int kind = code >> 4, slot = code & 15;
+    DWORD c[512], ex[512], pre[512]; int nc = lst_items(cand, c, 512), np = 0;
+    DWORD other = 0; int has_other = SCH[kind].tgt2off != 0, known = 1;
+    if (has_other) {   // the target that is NOT being picked now must already be known
+        if (slot == 1) { if (SCH[kind].tgt2addr) { memcpy(giftbuf, (void *)(dlg + SCH[kind].tgt2off), sizeof giftbuf); other = (DWORD)giftbuf; } else other = *(DWORD *)(dlg + SCH[kind].tgt2off); }
+        else other = *(DWORD *)(dlg + SCH[kind].tgtoff);
+        known = other != 0;
+    }
+    appr_n = 0;
+    int pairwise = !known && kind == 5 && slot == 1;   // 流言: both targets are forces from the same list, so judge a first force by "is there ANY second force that works"
+    if (known || pairwise) {
+        int ne = idle_kind(dlg, kind, ex, 512);
+        for (int t = 0; t < nc; t++) {
+            int ok = 0;
+            for (int e = 0; e < ne && !ok; e++) {
+                if (pairwise) { for (int u = 0; u < nc && !ok; u++) if (u != t && verdict_sch(kind, ex[e], c[t], c[u]) == 1) ok = 1; }
+                else ok = (slot == 2 ? verdict_sch(kind, ex[e], other, c[t]) : verdict_sch(kind, ex[e], c[t], other)) == 1;
+            }
+            if (ok) { pre[np++] = c[t]; if (appr_n < 512) appr[appr_n++] = c[t]; }
+        }
+        sort_front(cand, pre, np);
+    }
+    LOG("target picker kind %d slot %d: cand=%d approved=%d%s", kind, slot, nc, np, known ? "" : (pairwise ? " (any second target)" : " (the other target is not chosen yet: no marks)"));
+    return np;
+}
+int __attribute__((cdecl, used)) fpick_wrap(int code, DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6) {
+    tgt_pick_prep(code, dlg, cand);
+    int r = ((int (__attribute__((cdecl)) *)(DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD))0x506200)(dlg, out, cand, msg, help, a5, a6);
+    appr_n = 0; hot_rows_n = 0; hot_pending = -1;
+    return r;
+}
+int __attribute__((cdecl, used)) gpick_wrap(int code, DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6) {
+    tgt_pick_prep(code, dlg, cand);
+    int r = ((pick_t)0x57d980)(out, cand, msg, help, a5, a6);
+    appr_n = 0; hot_rows_n = 0; hot_pending = -1;
+    return r;
+}
+#define FPICK_STUB(N, CODE) __asm__(".globl _fpick" #N "_detour" "\n" "_fpick" #N "_detour:" "\n" \
+    " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" \
+    " pushl $" #CODE "\n" " call _fpick_wrap" "\n" " addl $32,%esp" "\n" " ret" "\n"); \
+    extern void fpick##N##_detour(void);
+#define GPICK_STUB(N, CODE, REG) __asm__(".globl _gpick" #N "_detour" "\n" "_gpick" #N "_detour:" "\n" \
+    " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" \
+    " pushl %" #REG "\n" " pushl $" #CODE "\n" " call _gpick_wrap" "\n" " addl $32,%esp" "\n" " ret" "\n"); \
+    extern void gpick##N##_detour(void);
+FPICK_STUB(3_1, 49)     /* 奪取 target facility            3*16+1 */
+FPICK_STUB(4_1, 65)     /* 燒夷 target facility            4*16+1 */
+FPICK_STUB(8_2, 130)    /* 請求 second target (facility)   8*16+2 */
+GPICK_STUB(5_1, 81, esi)    /* 流言 first force            5*16+1 */
+GPICK_STUB(5_2, 82, ebp)    /* 流言 second force           5*16+2 (dialog object is in ebp here) */
+GPICK_STUB(7_1, 113, esi)   /* 勸降 force                  7*16+1 */
+GPICK_STUB(8_1, 129, esi)   /* 請求 first target           8*16+1 */
+GPICK_STUB(9_1, 145, esi)   /* 贈與 force                  9*16+1 */
 
 DWORD __attribute__((cdecl, used)) mksch_wrap(int kind, DWORD self, DWORD factory) {
     DWORD c = 0;
@@ -579,6 +644,14 @@ static void hook_recruit_marks(void) {
     patch_call_to(0x4ea44b, 0x57da10, spick5_detour);   // 流言 executor picker -> multi-select
     set_vslot(0x619f08, 0x4cd3f0, mksch5_detour);       // 流言 CreateCommand
     patch_call_to(0x4e96ad, 0x57da10, tpick6_detour);   // 離間 target picker (single, sorted + ◎)
+    patch_call_to(0x4d7e7f, 0x506200, fpick3_1_detour);   // 奪取 target facility picker
+    patch_call_to(0x4f73cf, 0x506200, fpick4_1_detour);   // 燒夷 target facility picker
+    patch_call_to(0x4ea33e, 0x57d980, gpick5_1_detour);   // 流言 first force picker
+    patch_call_to(0x4eac7f, 0x57d980, gpick5_2_detour);   // 流言 second force picker
+    patch_call_to(0x4e455b, 0x57d980, gpick7_1_detour);   // 勸降 target force picker
+    patch_call_to(0x4f95ce, 0x57d980, gpick8_1_detour);   // 請求 first target picker
+    patch_call_to(0x4f9094, 0x506200, fpick8_2_detour);   // 請求 second target (facility) picker
+    patch_call_to(0x4fb68e, 0x57d980, gpick9_1_detour);   // 贈與 target force picker
     patch_call_to(0x4e972b, 0x57da10, spick6_detour);   // 離間 executor picker -> multi-select
     set_vslot(0x619ed8, 0x4cd020, mksch6_detour);       // 離間 CreateCommand
     patch_call_to(0x4e464b, 0x57da10, spick7_detour);   // 勸降 executor picker
@@ -827,11 +900,22 @@ static int hot_find(const char *row) {   // index of the first hot string that o
     return -1;
 }
 int __attribute__((cdecl, used)) pal_fix(const char *text, int color, DWORD lbl) {   // runs on every label text set; only notes whether this text is an approved row
-    hot_pending = (hot_n && text && !IsBadReadPtr(text, 1) && hot_find(text) >= 0) ? 1 : 0;
+    hot_pending = ((hot_n && text && !IsBadReadPtr(text, 1) && hot_find(text) >= 0) || (appr_n && cur_row_item && appr_has(cur_row_item))) ? 1 : 0;
     return color;
 }
 __asm__(".globl _pal_detour\n_pal_detour:\n pushl %ecx\n pushl %ecx\n pushl 16(%esp)\n pushl 16(%esp)\n call _pal_fix\n addl $12,%esp\n popl %ecx\n movl %eax,8(%esp)\n movl 8(%esp),%eax\n pushl %ebx\n pushl $0x578f35\n ret\n");
 extern void pal_detour(void);
+// row formatter 0x57e0d0(this=list, out CString*, row index): remember which item (officer / facility / force / region object) the row about to be set belongs to
+typedef DWORD (__attribute__((thiscall)) *item_at_t)(DWORD, int);
+void __attribute__((cdecl, used)) fmt_note(DWORD list, int idx) {
+    cur_row_item = 0;
+    if (!appr_n || IsBadReadPtr((void *)(list + 0x154), 4)) return;
+    if (setjmp(pj)) return;
+    probing = 1; cur_row_item = ((item_at_t)0x578300)(list + 0x154, idx); probing = 0;
+}
+static BYTE tramp_fmt[24]; BYTE *tramp_fmt_p = tramp_fmt;
+__asm__(".globl _fmt_detour\n_fmt_detour:\n pushl %ecx\n pushl 12(%esp)\n pushl %ecx\n call _fmt_note\n addl $8,%esp\n popl %ecx\n jmp *_tramp_fmt_p\n");
+extern void fmt_detour(void);
 static BYTE tramp_row[16]; BYTE *tramp_row_p = tramp_row;
 DWORD __attribute__((cdecl, used)) rowobj_after(DWORD obj) {   // 0x5cbdc0 returned the row's sprite object: its rect (vslot 7) is where the row is drawn
     int p = hot_pending; hot_pending = -1;
@@ -854,8 +938,14 @@ extern void rowobj_detour(void);
 static void hook_pal(void) {
     BYTE *f = (BYTE *)0x578f30; static const BYTE exp[] = {0x8b, 0x44, 0x24, 0x08, 0x53};
     BYTE *g = (BYTE *)0x5cbdc0; static const BYTE exp2[] = {0x53, 0x56, 0x57, 0x33, 0xf6, 0x56};
-    if (memcmp(f, exp, 5) || memcmp(g, exp2, 6)) { LOG("hook_pal: prologue mismatch"); return; }
+    BYTE *h = (BYTE *)0x57e0d0; static const BYTE exp3[] = {0x6a, 0xff, 0x68, 0x80, 0x65, 0x60, 0x00};
+    if (memcmp(f, exp, 5) || memcmp(g, exp2, 6) || memcmp(h, exp3, 7)) { LOG("hook_pal: prologue mismatch"); return; }
     DWORD o;
+    VirtualProtect(tramp_fmt, 24, PAGE_EXECUTE_READWRITE, &o);
+    memcpy(tramp_fmt, exp3, 7); tramp_fmt[7] = 0xe9; *(DWORD *)(tramp_fmt + 8) = 0x57e0d7 - (DWORD)(tramp_fmt + 12);
+    VirtualProtect(h, 7, PAGE_EXECUTE_READWRITE, &o);
+    h[0] = 0xe9; *(DWORD *)(h + 1) = (DWORD)fmt_detour - (DWORD)(h + 5); h[5] = h[6] = 0x90;
+    VirtualProtect(h, 7, o, &o);
     VirtualProtect(tramp_row, 16, PAGE_EXECUTE_READWRITE, &o);
     memcpy(tramp_row, exp2, 6); tramp_row[6] = 0xe9; *(DWORD *)(tramp_row + 7) = 0x5cbdc6 - (DWORD)(tramp_row + 11);
     VirtualProtect(f, 5, PAGE_EXECUTE_READWRITE, &o);
