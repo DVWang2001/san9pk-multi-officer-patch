@@ -171,9 +171,10 @@ int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD
     fill_good(dlg, picking_exec);
     if (picking_exec) return epick_multi(dlg, a1, a2, a3, a4);
     {   // target picker: approved targets first
-        DWORD c[64], pre[64]; int nc = lst_items(a2, c, 64), np = 0;
+        DWORD c[512], pre[512]; int nc = lst_items(a2, c, 512), np = 0;
         for (int i = 0; i < nc; i++) if (c[i] >= OFF_BASE && c[i] < OFF_BASE + OFF_N * OFF_SIZE && good[(c[i] - OFF_BASE) / OFF_SIZE]) pre[np++] = c[i];
         sort_front(a2, pre, np);
+        LOG("target picker cand=%d approved=%d", nc, np);
     }
     marking = 1;
     if (GetFileAttributesA("trace.on") != INVALID_FILE_ATTRIBUTES) {   // debug: who reads officer 242's name while the picker builds rows
@@ -245,14 +246,14 @@ static int lst_items(DWORD l, DWORD *out, int max) {          // node {next, pre
     int n = 0; for (DWORD *nd = *(DWORD **)(l + 4); nd && n < max; nd = (DWORD *)nd[0]) out[n++] = nd[2];
     return n;
 }
-#define QMAX 64
+#define QMAX 512
 static DWORD q_exec[QMAX], q_tgt[QMAX]; static int q_n, q_i, q_kind;   // kind 1 recruit, 2 explore
 static DWORD sel_exec[QMAX]; static int sel_n;                        // explore: officers checked in the multi picker
 static DWORD rec_pair_e[QMAX], rec_pair_t[QMAX]; static int rec_n;      // recruit: (executor, target) chosen at pick time
 static void patch_header(void);
 static void sort_front(DWORD cand, DWORD *pre, int npre) {   // advisor-approved rows first: stable-partition the candidate list's data pointers in place
-    DWORD *nd[256]; DWORD d[256], p1[256]; int n = 0, k = 0;
-    for (DWORD *x = *(DWORD **)(cand + 4); x && n < 256; x = (DWORD *)x[0]) { nd[n] = x; d[n++] = x[2]; }
+    DWORD *nd[512]; DWORD d[512], p1[512]; int n = 0, k = 0;
+    for (DWORD *x = *(DWORD **)(cand + 4); x && n < 512; x = (DWORD *)x[0]) { nd[n] = x; d[n++] = x[2]; }
     for (int i = 0; i < n; i++) for (int j = 0; j < npre; j++) if (d[i] == pre[j]) { p1[k++] = d[i]; break; }
     for (int i = 0; i < n; i++) { int in = 0; for (int j = 0; j < npre; j++) if (d[i] == pre[j]) in = 1; if (!in) p1[k++] = d[i]; }
     for (int i = 0; i < n; i++) nd[i][2] = p1[i];
@@ -623,6 +624,139 @@ static void watch_advisor(void) {
     LOG("guard armed %lx..%lx", pg[0], pg[npg-1] + 0xfff);
 }
 
+// ================= debug: timing-call tracer (IAT hooks; only when tt.on exists) =================
+#define TT_N 6
+static const DWORD tt_iat[TT_N] = {0x60f4d0, 0x60f114, 0x60f118, 0x60f144, 0x60f23c, 0x60f484};
+static const char *tt_name[TT_N] = {"timeGetTime", "Sleep", "SleepEx", "GetTickCount", "QPC", "PeekMessage"};
+static DWORD tt_orig[TT_N];
+static struct { DWORD api, caller, n, arg; } tt_tab[512]; static int tt_nt; static CRITICAL_SECTION tt_cs; static int tt_cs_ok;
+static void tt_hit(int api, DWORD caller, DWORD arg) {
+    if (!tt_cs_ok) return;
+    EnterCriticalSection(&tt_cs);
+    int i; for (i = 0; i < tt_nt; i++) if (tt_tab[i].api == (DWORD)api && tt_tab[i].caller == caller) break;
+    if (i == tt_nt && tt_nt < 512) { tt_tab[tt_nt].api = api; tt_tab[tt_nt].caller = caller; tt_tab[tt_nt].n = 0; tt_nt++; }
+    if (i < 512) { tt_tab[i].n++; tt_tab[i].arg = arg; }
+    LeaveCriticalSection(&tt_cs);
+}
+static DWORD WINAPI tt_timeGetTime(void) { tt_hit(0, (DWORD)__builtin_return_address(0), 0); return ((DWORD (WINAPI *)(void))tt_orig[0])(); }
+static void WINAPI tt_Sleep(DWORD ms) { tt_hit(1, (DWORD)__builtin_return_address(0), ms); ((void (WINAPI *)(DWORD))tt_orig[1])(ms); }
+static DWORD WINAPI tt_SleepEx(DWORD ms, BOOL a) { tt_hit(2, (DWORD)__builtin_return_address(0), ms); return ((DWORD (WINAPI *)(DWORD, BOOL))tt_orig[2])(ms, a); }
+static DWORD WINAPI tt_GetTickCount(void) { tt_hit(3, (DWORD)__builtin_return_address(0), 0); return ((DWORD (WINAPI *)(void))tt_orig[3])(); }
+static BOOL WINAPI tt_QPC(LARGE_INTEGER *q) { tt_hit(4, (DWORD)__builtin_return_address(0), 0); return ((BOOL (WINAPI *)(LARGE_INTEGER *))tt_orig[4])(q); }
+static BOOL WINAPI tt_Peek(LPMSG m, HWND h, UINT a, UINT b, UINT c) { tt_hit(5, (DWORD)__builtin_return_address(0), 0); return ((BOOL (WINAPI *)(LPMSG, HWND, UINT, UINT, UINT))tt_orig[5])(m, h, a, b, c); }
+static DWORD WINAPI tt_dump(LPVOID p) {
+    static DWORD last[512];
+    for (;;) {
+        Sleep(3000);
+        EnterCriticalSection(&tt_cs);
+        char b[2000]; int n = 0;
+        for (int i = 0; i < tt_nt && n < 1800; i++) if (tt_tab[i].n != last[i]) { n += sprintf(b + n, " %s@%lx:+%lu(a=%lu)", tt_name[tt_tab[i].api], tt_tab[i].caller, tt_tab[i].n - last[i], tt_tab[i].arg); last[i] = tt_tab[i].n; }
+        LeaveCriticalSection(&tt_cs);
+        if (n) LOG("tt%s", b);
+    }
+    return 0;
+}
+static void hook_tt(void) {
+    if (GetFileAttributesA("tt.on") == INVALID_FILE_ATTRIBUTES) return;
+    InitializeCriticalSection(&tt_cs); tt_cs_ok = 1;
+    void *w[TT_N] = {tt_timeGetTime, tt_Sleep, tt_SleepEx, tt_GetTickCount, tt_QPC, tt_Peek};
+    for (int i = 0; i < TT_N; i++) { DWORD o; tt_orig[i] = *(DWORD *)tt_iat[i]; VirtualProtect((void *)tt_iat[i], 4, PAGE_READWRITE, &o); *(DWORD *)tt_iat[i] = (DWORD)w[i]; VirtualProtect((void *)tt_iat[i], 4, o, &o); }
+    CreateThread(NULL, 0, tt_dump, NULL, 0, NULL);
+    LOG("tt tracer installed");
+}
+
+// ================= feature: 回合快進 (turn fast-forward) =================
+// The game paces everything with timeGetTime/GetTickCount (fixed-step loop at 0x435b40). While the turn is being processed
+// (progress phase: timeGetTime is called from 0x53d4fc / 0x53d690) we hand the game a virtual clock running SPD x faster.
+// F10 = faster, F9 = slower; the current speed is shown in the window title.
+static const int spd_tab[] = {1, 2, 3, 4, 6, 8, 12, 16}; static volatile int spd_i = 3;
+static volatile DWORD prog_last; static volatile int cur_scale = 1;
+typedef struct { DWORD r0, v0; int sc; } Vclk;
+static Vclk vc_t = {0, 0, 1}, vc_g = {0, 0, 1};
+static DWORD (WINAPI *real_tgt)(void), (WINAPI *real_gtc)(void);
+static DWORD vclk(Vclk *c, DWORD real) {   // ponytail: no lock; clocks are only read by the game thread in practice
+    if (c->sc != cur_scale) { c->v0 += (real - c->r0) * c->sc; c->r0 = real; c->sc = cur_scale; }
+    return c->v0 + (real - c->r0) * c->sc;
+}
+static DWORD WINAPI sp_timeGetTime(void) {
+    DWORD ra = (DWORD)__builtin_return_address(0), r = real_tgt();
+    if (ra == 0x53d4fc || ra == 0x53d690) prog_last = r;
+    int want = (r - prog_last < 700 && prog_last) ? spd_tab[spd_i] : 1;
+    if (want != cur_scale) { vclk(&vc_t, r); cur_scale = want; }   // re-anchor timeGetTime clock before the switch (vc_g re-anchors lazily)
+    return vclk(&vc_t, r);
+}
+static DWORD WINAPI sp_GetTickCount(void) { return vclk(&vc_g, real_gtc()); }
+static void spd_title(HWND w) {
+    static int shown = -1; int n = spd_tab[spd_i], on = cur_scale > 1;
+    int key = n * 2 + on; if (key == shown) return; shown = key;
+    wchar_t b[96]; if (n == 1) swprintf(b, L"三國志IXPK"); else swprintf(b, L"三國志IXPK　回合快進 ×%d%ls", n, on ? L" >>" : L"");
+    SetWindowTextW(w, b);
+}
+static DWORD WINAPI spd_thread(LPVOID p) {
+    int up = 0, dn = 0;
+    for (;;) {
+        Sleep(40);
+        HWND w = FindWindowA("KOEI_SAN9WINDOW", NULL); if (!w) continue;
+        if (GetForegroundWindow() == w) {
+            int u = (GetAsyncKeyState(VK_F10) & 0x8000) != 0, d = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+            if (u && !up && spd_i < 7) { spd_i++; LOG("speed x%d", spd_tab[spd_i]); }
+            if (d && !dn && spd_i > 0) { spd_i--; LOG("speed x%d", spd_tab[spd_i]); }
+            up = u; dn = d;
+        }
+        spd_title(w);
+    }
+    return 0;
+}
+// ---- on-screen speed label: the game presents through GDI BitBlt/StretchDIBits; draw the label on the window DC after each present that touches it ----
+static BOOL (WINAPI *real_bitblt)(HDC, int, int, int, int, HDC, int, int, DWORD);
+static int (WINAPI *real_sdib)(HDC, int, int, int, int, int, int, int, int, const void *, const BITMAPINFO *, UINT, DWORD);
+static HWND game_wnd; static HFONT ov_font;
+#define OV_X 108
+#define OV_Y 66
+#define OV_W 150
+#define OV_H 22
+static void draw_label(HDC dc, int x, int y, int w, int h) {   // (x,y,w,h): the rectangle just presented
+    int n = spd_tab[spd_i]; if (n == 1 && cur_scale == 1) return;   // label only while a speed-up is selected
+    if (x > OV_X + OV_W || x + w < OV_X || y > OV_Y + OV_H || y + h < OV_Y) return;
+    if (!ov_font) ov_font = CreateFontW(16, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"MS Gothic");
+    int sv = SaveDC(dc);
+    IntersectClipRect(dc, x, y, x + w, y + h);
+    SelectObject(dc, ov_font); SetBkColor(dc, RGB(20, 20, 30)); SetTextColor(dc, cur_scale > 1 ? RGB(255, 220, 80) : RGB(200, 200, 200));
+    wchar_t b[48]; int l = swprintf(b, L" 回合快進 ×%d %ls", n, cur_scale > 1 ? L"▶▶" : L"  ");
+    RECT r = {OV_X, OV_Y, OV_X + OV_W, OV_Y + OV_H};
+    ExtTextOutW(dc, OV_X, OV_Y + 2, ETO_OPAQUE | ETO_CLIPPED, &r, b, l, NULL);
+    RestoreDC(dc, sv);
+}
+static int ov_is_game(HDC dc) { if (!game_wnd) game_wnd = FindWindowA("KOEI_SAN9WINDOW", NULL); return game_wnd && WindowFromDC(dc) == game_wnd; }
+static BOOL WINAPI sp_BitBlt(HDC d, int x, int y, int w, int h, HDC s, int sx, int sy, DWORD op) {
+    BOOL r = real_bitblt(d, x, y, w, h, s, sx, sy, op);
+    if (ov_is_game(d)) draw_label(d, x, y, w, h);
+    return r;
+}
+static int WINAPI sp_SDIB(HDC d, int x, int y, int w, int h, int a, int b, int c, int e, const void *p, const BITMAPINFO *bi, UINT u, DWORD op) {
+    int r = real_sdib(d, x, y, w, h, a, b, c, e, p, bi, u, op);
+    if (ov_is_game(d)) draw_label(d, x, y, w, h);
+    return r;
+}
+static void hook_overlay(void) {
+    DWORD o; DWORD *bb = (DWORD *)0x60f068, *sd = (DWORD *)0x60f070;
+    real_bitblt = (void *)*bb; real_sdib = (void *)*sd;
+    VirtualProtect(bb, 4, PAGE_READWRITE, &o); *bb = (DWORD)sp_BitBlt; VirtualProtect(bb, 4, o, &o);
+    VirtualProtect(sd, 4, PAGE_READWRITE, &o); *sd = (DWORD)sp_SDIB; VirtualProtect(sd, 4, o, &o);
+    LOG("overlay hook installed");
+}
+
+static void hook_speed(void) {
+    if (GetFileAttributesA("no_speed.on") != INVALID_FILE_ATTRIBUTES) return;
+    DWORD o; DWORD *t = (DWORD *)0x60f4d0, *g = (DWORD *)0x60f144;
+    real_tgt = (void *)*t; real_gtc = (void *)*g;
+    VirtualProtect(t, 4, PAGE_READWRITE, &o); *t = (DWORD)sp_timeGetTime; VirtualProtect(t, 4, o, &o);
+    VirtualProtect(g, 4, PAGE_READWRITE, &o); *g = (DWORD)sp_GetTickCount; VirtualProtect(g, 4, o, &o);
+    CreateThread(NULL, 0, spd_thread, NULL, 0, NULL);
+    hook_overlay();
+    LOG("speed hook installed");
+}
+
 static DWORD WINAPI init(LPVOID p) {
     LOG("init pid=%lu", GetCurrentProcessId());
     for (int i = 0; i < 600 && !FindWindowA("KOEI_SAN9WINDOW", NULL); i++) Sleep(100);
@@ -632,6 +766,8 @@ static DWORD WINAPI init(LPVOID p) {
     hook_msg();
     hook_adv();
     hook_recruit_marks();
+    hook_tt();
+    hook_speed();
     // watch_advisor();  // ponytail: page-guard watcher off, hook_msg gives ids directly
     return 0;
 }
