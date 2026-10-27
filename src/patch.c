@@ -444,10 +444,14 @@ static int verdict_sch(int kind, DWORD exec, DWORD tgt, DWORD tgt2) {
     return q == 1 ? 1 : q == 3 ? 0 : -1;
 }
 // fills good[]/pre[] for the candidate targets c[]: approved if some idle officer (list type ltype at dlg+0x6b4) gets advisor "good"; kind 1 recruit, 6 離間
+static int idle_default(DWORD dlg, int ltype, DWORD *ex, int max) {   // the city's idle officers, via the game's own list builder
+    ((lst_build_t)0x4748a0)(dlg + 0x6b4, ltype, 0);
+    return lst_items(dlg + 0x6b4, ex, max);
+}
+static int (*idle_provider)(DWORD, int, DWORD *, int) = idle_default;   // replaced by the offline tests
 static int mark_targets(DWORD dlg, int ltype, int kind, DWORD cur, DWORD *c, int nc, DWORD *pre, DWORD *pre2, int *np2) {
     DWORD ex[512]; int np = 0; *np2 = 0;
-    ((lst_build_t)0x4748a0)(dlg + 0x6b4, ltype, 0);
-    int ne = lst_items(dlg + 0x6b4, ex, 512);
+    int ne = idle_provider(dlg, ltype, ex, 512);
     memset(good, 0, sizeof good);
     for (int t = 0; t < nc; t++) for (int e = 0; e < ne; e++) if ((kind == 1 ? verdict(ex[e], c[t]) : verdict_sch(kind, ex[e], c[t], 0)) == 1) {
         pre[np++] = c[t];
@@ -603,8 +607,7 @@ static int verdict_explore(DWORD exec, DWORD rg) {   // 1 good, 0 not, -1 error;
 typedef int (__attribute__((thiscall)) *rpick_t)(DWORD, DWORD, DWORD);
 int __attribute__((cdecl, used)) rpick_wrap(DWORD dlg, DWORD a1, DWORD a2) {
     DWORD ex[512]; int n = 0;
-    ((lst_build_t)0x4748a0)(dlg + 0x6b4, 0x1e, 0);               // idle officers of this city: a region is approved if ANY of them would succeed
-    int ne = lst_items(dlg + 0x6b4, ex, 512);
+    int ne = idle_provider(dlg, 0x1e, ex, 512);                  // idle officers of this city: a region is approved if ANY of them would succeed
     memset(rgood, 0, sizeof rgood);
     for (int i = 0; i < RG_N + CT_N; i++) for (int e = 0; e < ne; e++) if (verdict_explore(ex[e], region_at(i)) == 1) { rgood[i] = 1; n++; break; }
     LOG("rpick dlg=%lx idle=%d good=%d", dlg, ne, n);
@@ -774,6 +777,7 @@ static void hook_speed(void) {
     LOG("speed hook installed");
 }
 
+#ifndef HOST_TEST
 static DWORD WINAPI init(LPVOID p) {
     LOG("init pid=%lu", GetCurrentProcessId());
     for (int i = 0; i < 600 && !FindWindowA("KOEI_SAN9WINDOW", NULL); i++) Sleep(100);
@@ -797,3 +801,4 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r) {
     }
     return TRUE;
 }
+#endif

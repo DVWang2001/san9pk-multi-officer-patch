@@ -46,6 +46,16 @@ Steam 版《三國志IX with 威力加強版》(San9WPK.exe **v1.2.0.0**，繁�
 build.bat
 ```
 
+## 測試
+
+`tests/` 內有不需開啟遊戲視窗的離線回歸測試：把一份遊戲記憶體快照蓋回遊戲 exe 的副本裡，直接呼叫遊戲自己的軍師判斷，檢查補丁的排序、標記和回合快進時鐘。
+詳見 `tests/README.md`。快照檔（約 170 MB）不在倉庫裡，需要自己在遊戲中產生：
+
+```
+python tests	ake_snapshot.py                              (需要 Python + pywin32，會啟動遊戲載入第 12 格存檔)
+powershell -ExecutionPolicy Bypass -File testsun_tests.ps1   (約 10 秒，顯示 ALL PASS 或 FAILED)
+```
+
 ## 運作原理（簡述）
 
 遊戲載入時會讀取 `MyDoc.dll`（只匯出一個取得「我的文件」路徑的函式）。本補丁是它的代理 DLL：

@@ -2,3 +2,10 @@
 *.log
 *.bin
 *.png
+
+# offline tests: generated artifacts (the snapshot is ~170 MB)
+tests/snap.bin
+tests/snap_*.txt
+tests/run/
+tests/*.dll
+!tests/ref_date_slot12.png
