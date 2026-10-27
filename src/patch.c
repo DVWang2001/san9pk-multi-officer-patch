@@ -167,6 +167,16 @@ static int epick_multi(DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help);
 static int lst_items(DWORD l, DWORD *out, int max);
 static int mark_targets(DWORD dlg, int ltype, int kind, DWORD cur, DWORD *c, int nc, DWORD *pre, DWORD *pre2, int *np2);
 static void sort_front(DWORD cand, DWORD *pre, int npre);
+// ---- advisor-approved rows: the pickers record the exact strings they decorated; rows containing one of them are recoloured to HOT_COLOR in the presented pixels ----
+#define HOT_MAX 1024
+#define HOT_COLOR RGB(0x4d, 0xe3, 0xff)
+static char hot_s[HOT_MAX][24]; static unsigned char hot_len[HOT_MAX]; static int hot_n;
+#define HR_MAX 64
+typedef struct { DWORD obj; int l, t, r, b; } Hrect;
+static Hrect hot_rows[HR_MAX]; static int hot_rows_n; static volatile int hot_pending = -1;
+static void hot_clear(void) { hot_n = 0; hot_rows_n = 0; hot_pending = -1; }
+static void hot_add(const char *s) { size_t l = s ? strlen(s) : 0; if (hot_n < HOT_MAX && l > 0 && l < 24) { memcpy(hot_s[hot_n], s, l + 1); hot_len[hot_n++] = (unsigned char)l; } }
+static int hot_has(const char *s, int n) { for (int i = 0; i < hot_n; i++) if (hot_len[i] == n && !memcmp(hot_s[i], s, n)) return 1; return 0; }
 static DWORD rec_tgt;                                         // recruit target chosen in the dialog (for the queued extra executors)
 int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6) {
     int picking_exec = (ret == 0x4f5b53);
@@ -180,14 +190,14 @@ int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD
         sort_front(a2, pre, np); sort_front(a2, pre2, np2);   // order: OK for the current executor, then OK for someone else, then the rest
         LOG("target picker cand=%d approved=%d", nc, np);
     }
-    marking = 1;
+    marking = 1; hot_clear();
     if (GetFileAttributesA("trace.on") != INVALID_FILE_ATTRIBUTES) {   // debug: who reads officer 242's name while the picker builds rows
         static int vh; if (!vh) { AddVectoredExceptionHandler(1, veh); vh = 1; }
         glo = OFF_BASE + 242 * OFF_SIZE + 0x10; ghi = glo + 0x10; pg[0] = glo & ~0xfff; npg = 1; arm();
     }
     int r = ((pick_t)0x57da10)(a1, a2, a3, a4, a5, a6);
     if (npg) { DWORD o; npg = 0; VirtualProtect((void *)pg[0], 0x1000, PAGE_READWRITE, &o); }
-    marking = 0;
+    marking = 0; hot_clear();
     if (r && !picking_exec) rec_tgt = *(DWORD *)a1;            // target picker: remember the target
     return r;
 }
@@ -215,10 +225,7 @@ void __attribute__((cdecl, used)) name_wrap(DWORD off, DWORD out, DWORD ret) {
     if (marking && valid && good[(off - OFF_BASE) / OFF_SIZE]) {   // ◎ (Big5 a1 b7) goes in front of the name
         char b[80]; char *cur = *(char **)out;
         if (cur && strlen(cur) <= 6) { sprintf(b, "\xa1\xb7%s", cur); ((csasg_t)0x5c5fb0)(out, b); }
-    }
-    if (0 && ret == 0x454b57 && valid) {   // ponytail: list name column is 8 bytes, longer text shows as '*'; 相性 goes to the header instead             // 武將 column of every officer list: show 相性 (officer +0x6c)
-        char b[16]; sprintf(b, "(%d)", *(int *)(off + 0x6c));
-        ((cscat_t)0x5c6110)(out, b);
+        hot_add(*(char **)out);                                  // the row is recoloured later (also when the name was too long for the mark)
     }
 }
 __asm__(".globl _name_detour\n_name_detour:\n pushl (%esp)\n pushl 8(%esp)\n pushl %ecx\n call _name_wrap\n addl $12,%esp\n ret $4\n");
@@ -267,14 +274,14 @@ static int multi_pick(DWORD cand, DWORD *pre, int npre, int maxsel, DWORD msg, D
     static __attribute__((aligned(16))) BYTE outl[0x40];
     ((lst_ctor_t)0x476190)(outl);
     sort_front(cand, pre, npre);
-    marking = 1;
+    marking = 1; hot_clear();
     if (GetFileAttributesA("trace.on") != INVALID_FILE_ATTRIBUTES) {   // debug: who reads officer 242's record
         static int vh; if (!vh) { AddVectoredExceptionHandler(1, veh); vh = 1; }
         glo = OFF_BASE + 242 * OFF_SIZE; ghi = glo + OFF_SIZE; pg[0] = glo & ~0xfff; npg = 1; arm();
     }
     int r = ((mpick_t)0x57db90)(outl, cand, maxsel, msg, help, 1, 0);
     if (npg) { DWORD o; npg = 0; VirtualProtect((void *)pg[0], 0x1000, PAGE_READWRITE, &o); }
-    marking = 0;
+    marking = 0; hot_clear();
     int n = r ? lst_items((DWORD)outl, sel, QMAX) : 0;
     ((lst_ctor_t)0x4761b0)(outl);
     return n;
@@ -496,9 +503,9 @@ int __attribute__((cdecl, used)) tpick6_wrap(DWORD dlg, DWORD ret, DWORD out, DW
     int np = mark_targets(dlg, 0x1d, 6, *(DWORD *)(dlg + 0x1408), c, nc, pre, pre2, &np2);
     patch_header();
     sort_front(cand, pre, np); sort_front(cand, pre2, np2);
-    marking = 1;
+    marking = 1; hot_clear();
     int r = ((pick_t)0x57da10)(out, cand, msg, help, a5, a6);
-    marking = 0;
+    marking = 0; hot_clear();
     return r;
 }
 __asm__(".globl _tpick6_detour\n_tpick6_detour:\n"
@@ -612,9 +619,9 @@ int __attribute__((cdecl, used)) rpick_wrap(DWORD dlg, DWORD a1, DWORD a2) {
     for (int i = 0; i < RG_N + CT_N; i++) for (int e = 0; e < ne; e++) if (verdict_explore(ex[e], region_at(i)) == 1) { rgood[i] = 1; n++; break; }
     LOG("rpick dlg=%lx idle=%d good=%d", dlg, ne, n);
     { char s[1500]; int k = 0; for (int i = 0; i < RG_N + CT_N && k < 1400; i++) if (rgood[i]) k += sprintf(s + k, "%s ", (char *)(region_at(i) + 0x20)); LOG("rgood: %s", s); }
-    marking_rg = 1;
+    marking_rg = 1; hot_clear();
     int r = ((rpick_t)0x4f4980)(dlg, a1, a2);
-    marking_rg = 0;
+    marking_rg = 0; hot_clear();
     return r;
 }
 __asm__(".globl _rpick_detour\n_rpick_detour:\n pushl 8(%esp)\n pushl 8(%esp)\n pushl %ecx\n call _rpick_wrap\n addl $12,%esp\n ret $8\n");
@@ -626,8 +633,8 @@ void __attribute__((cdecl, used)) asg_wrap(DWORD cs, const char *src) {
         if (a >= RG_BASE && a < RG_BASE + RG_N * RG_SIZE && (a - RG_BASE) % RG_SIZE == 0) i = (a - RG_BASE) / RG_SIZE;
         else if (a >= CT_BASE && a < CT_BASE + CT_N * CT_SIZE && (a - CT_BASE) % CT_SIZE == 0) i = RG_N + (a - CT_BASE) / CT_SIZE;
     }
-    if (i >= 0 && rgood[i] && strlen(src) <= 6) { char b[16]; sprintf(b, "\xa1\xb7%s", src); ((csasg_t)0x5c5fb0)(cs, b); }   // ◎ goes in front of the name
-    else ((csasg_t)0x5c5fb0)(cs, src);
+    if (i >= 0 && rgood[i] && strlen(src) <= 6) { char b[16]; sprintf(b, "\xa1\xb7%s", src); ((csasg_t)0x5c5fb0)(cs, b); hot_add(b); }   // ◎ goes in front of the name
+    else { ((csasg_t)0x5c5fb0)(cs, src); if (i >= 0 && rgood[i]) hot_add(src); }
 }
 __asm__(".globl _asg_detour\n_asg_detour:\n pushl 4(%esp)\n pushl %ecx\n call _asg_wrap\n addl $8,%esp\n ret $4\n");
 extern void asg_detour(void);
@@ -748,12 +755,59 @@ static void draw_label(HDC dc, int x, int y, int w, int h) {   // (x,y,w,h): the
     RestoreDC(dc, sv);
 }
 static int ov_is_game(HDC dc) { if (!game_wnd) game_wnd = FindWindowA("KOEI_SAN9WINDOW", NULL); return game_wnd && WindowFromDC(dc) == game_wnd; }
+// ---- recolour the text of approved rows to HOT_COLOR inside the pixels the game is about to present (client coords: dest rect (dx,dy,dw,dh), source origin (sx,sy)) ----
+static void recolor_pix(BYTE *px, int bpp, int rgb565) {
+    int r, g, b;
+    if (bpp == 16) { WORD v = *(WORD *)px; if (rgb565) { r = (v >> 11) << 3; g = ((v >> 5) & 63) << 2; b = (v & 31) << 3; } else { r = ((v >> 10) & 31) << 3; g = ((v >> 5) & 31) << 3; b = (v & 31) << 3; } }
+    else { b = px[0]; g = px[1]; r = px[2]; }
+    int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    if (mx < 96 || abs(r - g) > 28 || abs(g - b) > 28) return;   // not (grey) text pixel
+    int nr = GetRValue(HOT_COLOR) * mx / 255, ng = GetGValue(HOT_COLOR) * mx / 255, nb = GetBValue(HOT_COLOR) * mx / 255;
+    if (bpp == 16) { *(WORD *)px = rgb565 ? (WORD)(((nr >> 3) << 11) | ((ng >> 2) << 5) | (nb >> 3)) : (WORD)(((nr >> 3) << 10) | ((ng >> 3) << 5) | (nb >> 3)); }
+    else { px[0] = (BYTE)nb; px[1] = (BYTE)ng; px[2] = (BYTE)nr; }
+}
+static void hot_refresh(void) {   // row objects are reused when the list scrolls: ask each one where it is NOW
+    for (int i = 0; i < hot_rows_n; ) {
+        DWORD obj = hot_rows[i].obj; int rc[4] = {0, 0, 0, 0}, ok = 0;
+        if (obj && !IsBadReadPtr((void *)obj, 8)) { DWORD *vt = *(DWORD **)obj; if (!IsBadReadPtr(vt, 32) && !setjmp(pj)) { probing = 1; ((void (__attribute__((thiscall)) *)(DWORD, int *))vt[7])(obj, rc); probing = 0; ok = rc[2] - rc[0] >= 100 && rc[3] - rc[1] >= 8 && rc[3] - rc[1] <= 60; } }
+        if (ok) { hot_rows[i].l = rc[0]; hot_rows[i].t = rc[1]; hot_rows[i].r = rc[2]; hot_rows[i].b = rc[3]; i++; } else hot_rows[i] = hot_rows[--hot_rows_n];
+    }
+}
+static void recolor_rows(BYTE *bits, int bpp, int width, int height, int topdown, int rgb565, int dx, int dy, int dw, int dh, int sx, int sy) {
+    if (!hot_rows_n || !bits || (bpp != 16 && bpp != 24 && bpp != 32)) return;
+    hot_refresh();
+    int pitch = ((width * bpp + 31) / 32) * 4, bytes = bpp / 8;
+    for (int i = 0; i < hot_rows_n; i++) {
+        int x0 = hot_rows[i].l > dx ? hot_rows[i].l : dx, x1 = hot_rows[i].r < dx + dw ? hot_rows[i].r : dx + dw;
+        int y0 = hot_rows[i].t > dy ? hot_rows[i].t : dy, y1 = hot_rows[i].b < dy + dh ? hot_rows[i].b : dy + dh;
+        for (int y = y0; y < y1; y++) {
+            int row = sy + (y - dy); if (row < 0 || row >= height) continue;
+            BYTE *line = bits + (topdown ? row : height - 1 - row) * pitch;
+            for (int x = x0; x < x1; x++) { int col = sx + (x - dx); if (col < 0 || col >= width) continue; recolor_pix(line + col * bytes, bpp, rgb565); }
+        }
+    }
+}
+static void recolor_for_blt(HDC s, int dx, int dy, int dw, int dh, int sx, int sy) {
+    if (!hot_rows_n) return;
+    HBITMAP hb = (HBITMAP)GetCurrentObject(s, OBJ_BITMAP); DIBSECTION ds;
+    if (!hb || GetObject(hb, sizeof ds, &ds) < (int)sizeof(BITMAP) || !ds.dsBm.bmBits) return;
+    static int dbg; if (dbg < 6) { dbg++; LOG("recolor via BitBlt: bpp=%d %dx%d topdown=%d comp=%lu", ds.dsBm.bmBitsPixel, (int)ds.dsBm.bmWidth, (int)ds.dsBm.bmHeight, ds.dsBmih.biHeight < 0, ds.dsBmih.biCompression); }
+    recolor_rows(ds.dsBm.bmBits, ds.dsBm.bmBitsPixel, ds.dsBm.bmWidth, ds.dsBm.bmHeight, ds.dsBmih.biHeight < 0, ds.dsBmih.biCompression == BI_BITFIELDS && ds.dsBitfields[1] == 0x07e0, dx, dy, dw, dh, sx, sy);
+}
+static void recolor_for_dib(const void *p, const BITMAPINFO *bi, int dx, int dy, int dw, int dh, int sx, int sy) {
+    if (!hot_rows_n || !p || !bi) return;
+    int w = bi->bmiHeader.biWidth, h = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
+    static int dbg; if (dbg < 6) { dbg++; LOG("recolor via StretchDIBits: bpp=%d %dx%d topdown=%d comp=%lu", bi->bmiHeader.biBitCount, w, h, bi->bmiHeader.biHeight < 0, bi->bmiHeader.biCompression); }
+    recolor_rows((BYTE *)p, bi->bmiHeader.biBitCount, w, h, bi->bmiHeader.biHeight < 0, bi->bmiHeader.biCompression == BI_BITFIELDS && *(DWORD *)bi->bmiColors == 0xf800, dx, dy, dw, dh, sx, sy);
+}
 static BOOL WINAPI sp_BitBlt(HDC d, int x, int y, int w, int h, HDC s, int sx, int sy, DWORD op) {
+    if (hot_rows_n && ov_is_game(d)) recolor_for_blt(s, x, y, w, h, sx, sy);
     BOOL r = real_bitblt(d, x, y, w, h, s, sx, sy, op);
     if (ov_is_game(d)) draw_label(d, x, y, w, h);
     return r;
 }
 static int WINAPI sp_SDIB(HDC d, int x, int y, int w, int h, int a, int b, int c, int e, const void *p, const BITMAPINFO *bi, UINT u, DWORD op) {
+    if (hot_rows_n && ov_is_game(d)) recolor_for_dib(p, bi, x, y, w, h, a, b);
     int r = real_sdib(d, x, y, w, h, a, b, c, e, p, bi, u, op);
     if (ov_is_game(d)) draw_label(d, x, y, w, h);
     return r;
@@ -764,6 +818,53 @@ static void hook_overlay(void) {
     VirtualProtect(bb, 4, PAGE_READWRITE, &o); *bb = (DWORD)sp_BitBlt; VirtualProtect(bb, 4, o, &o);
     VirtualProtect(sd, 4, PAGE_READWRITE, &o); *sd = (DWORD)sp_SDIB; VirtualProtect(sd, 4, o, &o);
     LOG("overlay hook installed");
+}
+
+// ---- advisor-approved list rows: remember which visible rows are approved and where they are on screen (the row labels are set by 0x578f30, then the row's sprite object comes from 0x5cbdc0) ----
+static int hot_find(const char *row) {   // index of the first hot string that occurs at a Big5 character boundary inside row, else -1
+    for (const char *p = row; *p; p += ((BYTE)*p >= 0x81 && p[1]) ? 2 : 1)
+        for (int i = 0; i < hot_n; i++) if (!strncmp(p, hot_s[i], hot_len[i])) return i;
+    return -1;
+}
+int __attribute__((cdecl, used)) pal_fix(const char *text, int color, DWORD lbl) {   // runs on every label text set; only notes whether this text is an approved row
+    hot_pending = (hot_n && text && !IsBadReadPtr(text, 1) && hot_find(text) >= 0) ? 1 : 0;
+    return color;
+}
+__asm__(".globl _pal_detour\n_pal_detour:\n pushl %ecx\n pushl %ecx\n pushl 16(%esp)\n pushl 16(%esp)\n call _pal_fix\n addl $12,%esp\n popl %ecx\n movl %eax,8(%esp)\n movl 8(%esp),%eax\n pushl %ebx\n pushl $0x578f35\n ret\n");
+extern void pal_detour(void);
+static BYTE tramp_row[16]; BYTE *tramp_row_p = tramp_row;
+DWORD __attribute__((cdecl, used)) rowobj_after(DWORD obj) {   // 0x5cbdc0 returned the row's sprite object: its rect (vslot 7) is where the row is drawn
+    int p = hot_pending; hot_pending = -1;
+    if (p < 0 || !obj || IsBadReadPtr((void *)obj, 8)) return obj;
+    static __attribute__((aligned(16))) int rc[8]; memset(rc, 0, sizeof rc);
+    DWORD *vt = *(DWORD **)obj;
+    if (IsBadReadPtr(vt, 32)) return obj;
+    if (setjmp(pj)) return obj;
+    probing = 1; ((void (__attribute__((thiscall)) *)(DWORD, int *))vt[7])(obj, rc); probing = 0;
+    if (rc[2] - rc[0] < 100 || rc[3] - rc[1] < 8 || rc[3] - rc[1] > 60) return obj;   // not a list row
+    for (int i = 0; i < hot_rows_n; i++) if (hot_rows[i].obj == obj) {
+        if (p) { hot_rows[i].l = rc[0]; hot_rows[i].t = rc[1]; hot_rows[i].r = rc[2]; hot_rows[i].b = rc[3]; } else hot_rows[i] = hot_rows[--hot_rows_n];
+        return obj;
+    }
+    if (p && hot_rows_n < HR_MAX) { Hrect *h = &hot_rows[hot_rows_n++]; h->obj = obj; h->l = rc[0]; h->t = rc[1]; h->r = rc[2]; h->b = rc[3]; }
+    return obj;
+}
+__asm__(".globl _rowobj_detour\n_rowobj_detour:\n pushl 4(%esp)\n call *_tramp_row_p\n pushl %eax\n call _rowobj_after\n addl $4,%esp\n ret $4\n");
+extern void rowobj_detour(void);
+static void hook_pal(void) {
+    BYTE *f = (BYTE *)0x578f30; static const BYTE exp[] = {0x8b, 0x44, 0x24, 0x08, 0x53};
+    BYTE *g = (BYTE *)0x5cbdc0; static const BYTE exp2[] = {0x53, 0x56, 0x57, 0x33, 0xf6, 0x56};
+    if (memcmp(f, exp, 5) || memcmp(g, exp2, 6)) { LOG("hook_pal: prologue mismatch"); return; }
+    DWORD o;
+    VirtualProtect(tramp_row, 16, PAGE_EXECUTE_READWRITE, &o);
+    memcpy(tramp_row, exp2, 6); tramp_row[6] = 0xe9; *(DWORD *)(tramp_row + 7) = 0x5cbdc6 - (DWORD)(tramp_row + 11);
+    VirtualProtect(f, 5, PAGE_EXECUTE_READWRITE, &o);
+    f[0] = 0xe9; *(DWORD *)(f + 1) = (DWORD)pal_detour - (DWORD)(f + 5);
+    VirtualProtect(f, 5, o, &o);
+    VirtualProtect(g, 6, PAGE_EXECUTE_READWRITE, &o);
+    g[0] = 0xe9; *(DWORD *)(g + 1) = (DWORD)rowobj_detour - (DWORD)(g + 5); g[5] = 0x90;
+    VirtualProtect(g, 6, o, &o);
+    LOG("row hooks installed");
 }
 
 static void hook_speed(void) {
@@ -789,6 +890,7 @@ static DWORD WINAPI init(LPVOID p) {
     hook_recruit_marks();
     hook_tt();
     hook_speed();
+    hook_pal();
     // watch_advisor();  // ponytail: page-guard watcher off, hook_msg gives ids directly
     return 0;
 }
