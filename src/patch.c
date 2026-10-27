@@ -431,7 +431,7 @@ static void patch_header(void) {
 typedef struct { DWORD tgtoff, ctx_ctor, ctx_dtor, adv, cmd_ctor, cmd_size, tgt2off, tgt2addr; } Sch;
 typedef void (__attribute__((thiscall)) *ctor4_t)(void *, int, DWORD, DWORD, DWORD);
 static DWORD q_tgt2[QMAX];
-static const Sch SCH[10] = {
+static const Sch SCH[14] = {
     {0},{0},{0},
     {0x6f8, 0x4938b0, 0x4938e0, 0x498830, 0x4938b0, 0x44},   /* 3 奪取 */
     {0x6f8, 0x49c880, 0x49c8b0, 0x498830, 0x49c880, 0x44, 0},   /* 4 燒夷 */
@@ -440,6 +440,10 @@ static const Sch SCH[10] = {
     {4,     0x497470, 0x4974b0, 0x497990, 0x497470, 0x40, 0, 0},      /* 7 勸降: esi=&exec, force=[esi+4] */
     {0x71c, 0x49d640, 0x49d6a0, 0x49e4e0, 0x49d640, 0x40, 0x720, 0},  /* 8 請求: dlg+0x71c target force/facility, +0x720 */
     {0x159c,0x49f210, 0x49f280, 0x49f740, 0x49f210, 0x40, 0x15a0, 1}, /* 9 贈與: dlg+0x159c force, ptr arg = &dlg[0x15a0] (copied) */
+    {0x6f8, 0x494d10, 0x494d40, 0x498830, 0x494d10, 0x44, 0, 0},   /* 10 偽報 (target unit [dlg+0x6f8]) */
+    {0x6f8, 0x496c80, 0x496cb0, 0x498830, 0x496c80, 0x44, 0, 0},   /* 11 擾亂 */
+    {0x6f8, 0x494730, 0x494760, 0x498830, 0x494730, 0x44, 0, 0},   /* 12 激勵 */
+    {0x6f8, 0x498c00, 0x498c30, 0x498830, 0x498c00, 0x44, 0, 0},   /* 13 救援 */
 };
 static DWORD pk_tg, pk_tg2; static BYTE giftbuf[0x40];
 static int verdict_sch(int kind, DWORD exec, DWORD tgt, DWORD tgt2) {
@@ -498,6 +502,10 @@ SPICK_STUB(8)
 SPICK_STUB(9)
 
 SPICK_STUB(6)
+SPICK_STUB(10)
+SPICK_STUB(11)
+SPICK_STUB(12)
+SPICK_STUB(13)
 // 離間 target picker (single): executor at [dlg+0x1408]; approved targets first + ◎
 int __attribute__((cdecl, used)) tpick6_wrap(DWORD dlg, DWORD ret, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6) {
     DWORD c[512], pre[512]; int nc = lst_items(cand, c, 512);
@@ -517,10 +525,11 @@ extern void tpick6_detour(void);
 // ---- target pickers of the other commands: the facility list (0x506200: 奪取 / 燒夷 / 請求's 2nd target) and the generic list picker (0x57d980: 流言 / 勸降 / 請求 / 贈與) ----
 // A candidate target is approved when ANY idle officer of the city would succeed against it (advisor "good"); approved ones are sorted first and their rows recoloured.
 // code = kind * 16 + slot (slot 1 = first target [SCH.tgtoff], slot 2 = second target [SCH.tgt2off])
-static const struct { int off, ltype; } IDLE_TAB[10] = {{0, 0}, {0, 0}, {0, 0}, {0x6b4, 0x1c}, {0x6b4, 0x1c}, {0x6b8, 0x1d}, {0x6b4, 0x1d}, {0x120c, 0x1e}, {0x6b8, 0x1e}, {0x1558, 0x1e}};
+static const struct { int off, ltype; } IDLE_TAB[14] = {{0, 0}, {0, 0}, {0, 0}, {0x6b4, 0x1c}, {0x6b4, 0x1c}, {0x6b8, 0x1d}, {0x6b4, 0x1d}, {0x120c, 0x1e}, {0x6b8, 0x1e}, {0x1558, 0x1e}, {0x6b4, 0x1d}, {0x6b4, 0x1d}, {0x6b4, -1}, {0x6b4, 0x1b}};
 static int idle_kind(DWORD dlg, int kind, DWORD *ex, int max) {   // idle officers, built the way the command's own executor handler builds them
     if (idle_provider != idle_default) return idle_provider(dlg, IDLE_TAB[kind].ltype, ex, max);   // offline tests
-    ((lst_build_t)0x4748a0)(dlg + IDLE_TAB[kind].off, IDLE_TAB[kind].ltype, 0);
+    if (IDLE_TAB[kind].ltype == -1) ((lst_build_t)0x474840)(dlg + IDLE_TAB[kind].off, 0x4d89e0, 0);   // 激勵 builds its list with a filter callback
+    else ((lst_build_t)0x4748a0)(dlg + IDLE_TAB[kind].off, IDLE_TAB[kind].ltype, 0);
     return lst_items(dlg + IDLE_TAB[kind].off, ex, max);
 }
 static int tgt_pick_prep(int code, DWORD dlg, DWORD cand) {
@@ -561,6 +570,16 @@ int __attribute__((cdecl, used)) gpick_wrap(int code, DWORD dlg, DWORD out, DWOR
     appr_n = 0; hot_rows_n = 0; hot_pending = -1;
     return r;
 }
+int __attribute__((cdecl, used)) upick_wrap(int code, DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6) {
+    tgt_pick_prep(code, dlg, cand);
+    int r = ((int (__attribute__((cdecl)) *)(DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD))0x506230)(dlg, out, cand, msg, help, a5, a6);
+    appr_n = 0; hot_rows_n = 0; hot_pending = -1;
+    return r;
+}
+#define UPICK_STUB(N, CODE) __asm__(".globl _upick" #N "_detour" "\n" "_upick" #N "_detour:" "\n" \
+    " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" \
+    " pushl $" #CODE "\n" " call _upick_wrap" "\n" " addl $32,%esp" "\n" " ret" "\n"); \
+    extern void upick##N##_detour(void);
 #define FPICK_STUB(N, CODE) __asm__(".globl _fpick" #N "_detour" "\n" "_fpick" #N "_detour:" "\n" \
     " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" " pushl 28(%esp)" "\n" \
     " pushl $" #CODE "\n" " call _fpick_wrap" "\n" " addl $32,%esp" "\n" " ret" "\n"); \
@@ -569,6 +588,10 @@ int __attribute__((cdecl, used)) gpick_wrap(int code, DWORD dlg, DWORD out, DWOR
     " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" \
     " pushl %" #REG "\n" " pushl $" #CODE "\n" " call _gpick_wrap" "\n" " addl $32,%esp" "\n" " ret" "\n"); \
     extern void gpick##N##_detour(void);
+UPICK_STUB(10, 161)    /* 偽報 target unit  10*16+1 */
+UPICK_STUB(11, 177)    /* 擾亂              11*16+1 */
+UPICK_STUB(12, 193)    /* 激勵              12*16+1 */
+UPICK_STUB(13, 209)    /* 救援              13*16+1 */
 FPICK_STUB(3_1, 49)     /* 奪取 target facility            3*16+1 */
 FPICK_STUB(4_1, 65)     /* 燒夷 target facility            4*16+1 */
 FPICK_STUB(8_2, 130)    /* 請求 second target (facility)   8*16+2 */
@@ -591,7 +614,7 @@ DWORD __attribute__((cdecl, used)) mksch_wrap(int kind, DWORD self, DWORD factor
     c = ((mk_t)factory)(self);
     if (c && sel_n > 1) {
         DWORD tg = *(DWORD *)(c + 0x40), tg2 = SCH[kind].tgt2off ? *(DWORD *)(c + 0x44) : 0;
-        if (kind >= 7) { tg = pk_tg; tg2 = pk_tg2; }
+        if (kind >= 7 && kind <= 9) { tg = pk_tg; tg2 = pk_tg2; }
         for (int k = 1; k < sel_n; k++) { q_exec[q_n] = sel_exec[k]; q_tgt[q_n] = tg; q_tgt2[q_n] = tg2; q_n++; }
         start_queue(self, kind);
     }
@@ -605,6 +628,10 @@ MKSCH_STUB(3, 0x4c7340)
 MKSCH_STUB(4, 0x4cf520)
 MKSCH_STUB(5, 0x4cd3f0)
 MKSCH_STUB(6, 0x4cd020)
+MKSCH_STUB(10, 0x4c79c0)
+MKSCH_STUB(11, 0x4c9f60)
+MKSCH_STUB(12, 0x4c7680)
+MKSCH_STUB(13, 0x4cb570)
 #define MKSCH_STUB2(N, K, FACT) __asm__(".globl _mksch" #N "_detour" "\n" "_mksch" #N "_detour:" "\n" \
     " pushl $" #FACT "\n" " pushl %ecx" "\n" " pushl $" #K "\n" " call _mksch_wrap" "\n" " addl $12,%esp" "\n" " ret" "\n"); \
     extern void mksch##N##_detour(void);
@@ -654,6 +681,18 @@ static void hook_recruit_marks(void) {
     patch_call_to(0x4fb68e, 0x57d980, gpick9_1_detour);   // 贈與 target force picker
     patch_call_to(0x4e972b, 0x57da10, spick6_detour);   // 離間 executor picker -> multi-select
     set_vslot(0x619ed8, 0x4cd020, mksch6_detour);       // 離間 CreateCommand
+    patch_call_to(0x4d912b, 0x57da10, spick10_detour);  // 偽報 executor picker -> multi-select
+    set_vslot(0x619ad0, 0x4c79c0, mksch10_detour);
+    patch_call_to(0x4e36cb, 0x57da10, spick11_detour);  // 擾亂
+    set_vslot(0x619cb0, 0x4c9f60, mksch11_detour);
+    patch_call_to(0x4d8e2e, 0x57da10, spick12_detour);  // 激勵
+    set_vslot(0x619aa0, 0x4c7680, mksch12_detour);
+    patch_call_to(0x4e810b, 0x57da10, spick13_detour);  // 救援
+    set_vslot(0x619d70, 0x4cb570, mksch13_detour);
+    patch_call_to(0x4d9b9c, 0x506230, upick10_detour);  // 偽報 target unit picker
+    patch_call_to(0x4e40dc, 0x506230, upick11_detour);  // 擾亂
+    patch_call_to(0x4d8d2f, 0x506230, upick12_detour);  // 激勵
+    patch_call_to(0x4e8adf, 0x506230, upick13_detour);  // 救援
     patch_call_to(0x4e464b, 0x57da10, spick7_detour);   // 勸降 executor picker
     set_vslot(0x619ce0, 0x4ca2a0, mksch7a_detour); set_vslot(0x61948c, 0x4b3ad0, mksch7b_detour);
     patch_call_to(0x4f856b, 0x57da10, spick8_detour);   // 請求 executor picker
@@ -957,6 +996,28 @@ static void hook_pal(void) {
     LOG("row hooks installed");
 }
 
+
+// ---- debug probe: which dialog owns which executor-picker site (probe_sites.on) ----
+int __attribute__((cdecl, used)) psite_wrap(DWORD site, DWORD dlg, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6) {
+    LOG("probe exec-picker site %lx dlg=%lx", site, dlg);
+    return ((pick_t)0x57da10)(a1, a2, a3, a4, a5, a6);
+}
+#define PSITE_STUB(N, SITE) __asm__(".globl _psite" #N "_detour" "\n" "_psite" #N "_detour:" "\n" \
+    " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" " pushl 24(%esp)" "\n" \
+    " pushl %esi" "\n" " pushl $" #SITE "\n" " call _psite_wrap" "\n" " addl $32,%esp" "\n" " ret" "\n"); \
+    extern void psite##N##_detour(void);
+PSITE_STUB(0, 0x4d8e2e)
+PSITE_STUB(1, 0x4d912b)
+PSITE_STUB(2, 0x4da97b)
+PSITE_STUB(3, 0x4e36cb)
+PSITE_STUB(4, 0x4e810b)
+PSITE_STUB(5, 0x4fa6b9)
+static void hook_psites(void) {
+    if (GetFileAttributesA("probe_sites.on") == INVALID_FILE_ATTRIBUTES) return;
+    patch_call_to(0x4d8e2e, 0x57da10, psite0_detour); patch_call_to(0x4d912b, 0x57da10, psite1_detour); patch_call_to(0x4da97b, 0x57da10, psite2_detour);
+    patch_call_to(0x4e36cb, 0x57da10, psite3_detour); patch_call_to(0x4e810b, 0x57da10, psite4_detour); patch_call_to(0x4fa6b9, 0x57da10, psite5_detour);
+    LOG("probe sites installed");
+}
 static void hook_speed(void) {
     if (GetFileAttributesA("no_speed.on") != INVALID_FILE_ATTRIBUTES) return;
     DWORD o; DWORD *t = (DWORD *)0x60f4d0, *g = (DWORD *)0x60f144;
@@ -981,6 +1042,7 @@ static DWORD WINAPI init(LPVOID p) {
     hook_tt();
     hook_speed();
     hook_pal();
+    hook_psites();
     // watch_advisor();  // ponytail: page-guard watcher off, hook_msg gives ids directly
     return 0;
 }
