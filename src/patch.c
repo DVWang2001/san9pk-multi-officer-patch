@@ -602,10 +602,12 @@ static int verdict_explore(DWORD exec, DWORD rg) {   // 1 good, 0 not, -1 error;
 }
 typedef int (__attribute__((thiscall)) *rpick_t)(DWORD, DWORD, DWORD);
 int __attribute__((cdecl, used)) rpick_wrap(DWORD dlg, DWORD a1, DWORD a2) {
-    DWORD exec = *(DWORD *)(dlg + 0xed4); int n = 0;
+    DWORD ex[512]; int n = 0;
+    ((lst_build_t)0x4748a0)(dlg + 0x6b4, 0x1e, 0);               // idle officers of this city: a region is approved if ANY of them would succeed
+    int ne = lst_items(dlg + 0x6b4, ex, 512);
     memset(rgood, 0, sizeof rgood);
-    if (exec) for (int i = 0; i < RG_N + CT_N; i++) if (verdict_explore(exec, region_at(i)) == 1) { rgood[i] = 1; n++; }
-    LOG("rpick dlg=%lx exec=%lx good=%d", dlg, exec, n);
+    for (int i = 0; i < RG_N + CT_N; i++) for (int e = 0; e < ne; e++) if (verdict_explore(ex[e], region_at(i)) == 1) { rgood[i] = 1; n++; break; }
+    LOG("rpick dlg=%lx idle=%d good=%d", dlg, ne, n);
     { char s[1500]; int k = 0; for (int i = 0; i < RG_N + CT_N && k < 1400; i++) if (rgood[i]) k += sprintf(s + k, "%s ", (char *)(region_at(i) + 0x20)); LOG("rgood: %s", s); }
     marking_rg = 1;
     int r = ((rpick_t)0x4f4980)(dlg, a1, a2);
