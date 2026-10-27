@@ -161,10 +161,13 @@ static void fill_good(DWORD dlg, int picking_exec) {
 }
 // patched call sites of the picker 0x57da10 inside the 登庸 dialog (esi = dialog at both sites)
 typedef int (__attribute__((cdecl)) *pick_t)(DWORD, DWORD, DWORD, DWORD, DWORD, DWORD);
+static int epick_multi(DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help);
+static DWORD rec_tgt;                                          // recruit target chosen in the dialog (for the queued extra executors)
 int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6) {
     int picking_exec = (ret == 0x4f5b53);
     patch_header();
     fill_good(dlg, picking_exec);
+    if (picking_exec) return epick_multi(dlg, a1, a2, a3, a4);
     marking = 1;
     if (GetFileAttributesA("trace.on") != INVALID_FILE_ATTRIBUTES) {   // debug: who reads officer 242's name while the picker builds rows
         static int vh; if (!vh) { AddVectoredExceptionHandler(1, veh); vh = 1; }
@@ -173,6 +176,7 @@ int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD
     int r = ((pick_t)0x57da10)(a1, a2, a3, a4, a5, a6);
     if (npg) { DWORD o; npg = 0; VirtualProtect((void *)pg[0], 0x1000, PAGE_READWRITE, &o); }
     marking = 0;
+    if (r && !picking_exec) rec_tgt = *(DWORD *)a1;            // target picker: remember the target
     return r;
 }
 // entry: [esp]=ret, [esp+4..]=6 args; pass esi (dialog) and ret
@@ -188,15 +192,18 @@ static void patch_call_to(DWORD site, DWORD expect, void *to) {
     VirtualProtect(p, 5, o, &o);
 }
 #define patch_call(s, to) patch_call_to(s, 0x57da10, to)
-// Officer::GetName(CString *out) at 0x44e600 (thiscall, ret 4) feeds the 武將 column: append ◎ when marking
+// Officer::GetName(CString *out) at 0x44e600 (thiscall, ret 4) feeds the 武將 column: put ◎ in front when marking
+typedef void (__attribute__((thiscall)) *csasg_t)(DWORD, const char *);
 static BYTE tramp3[16];
 typedef void (__attribute__((thiscall)) *getname_t)(DWORD, DWORD);
 typedef void (__attribute__((thiscall)) *cscat_t)(DWORD, const char *);   // CString::operator+=(const char*)
 void __attribute__((cdecl, used)) name_wrap(DWORD off, DWORD out, DWORD ret) {
     ((getname_t)tramp3)(off, out);
     int valid = off >= OFF_BASE && off < OFF_BASE + OFF_N * OFF_SIZE && (off - OFF_BASE) % OFF_SIZE == 0;
-    if (marking && valid && good[(off - OFF_BASE) / OFF_SIZE])
-        ((cscat_t)0x5c6110)(out, "\xa1\xb7");   // ◎ in Big5
+    if (marking && valid && good[(off - OFF_BASE) / OFF_SIZE]) {   // ◎ (Big5 a1 b7) goes in front of the name
+        char b[80]; char *cur = *(char **)out;
+        if (cur && strlen(cur) <= 6) { sprintf(b, "\xa1\xb7%s", cur); ((csasg_t)0x5c5fb0)(out, b); }
+    }
     if (0 && ret == 0x454b57 && valid) {   // ponytail: list name column is 8 bytes, longer text shows as '*'; 相性 goes to the header instead             // 武將 column of every officer list: show 相性 (officer +0x6c)
         char b[16]; sprintf(b, "(%d)", *(int *)(off + 0x6c));
         ((cscat_t)0x5c6110)(out, b);
@@ -274,44 +281,23 @@ int __attribute__((cdecl, used)) xpick_wrap(DWORD dlg, DWORD ret, DWORD out, DWO
     sel_n = n; *(DWORD *)out = sel_exec[0];
     return 1;
 }
-// recruit: target picker call at 0x4f5ad0 -> 57da10(&dlg[0x12d8], cand, 0x1755, help, 0, 0)
-int __attribute__((cdecl, used)) tpick_wrap(DWORD dlg, DWORD ret, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6, DWORD argp) {
-    DWORD ex[QMAX], tg[QMAX], pre[QMAX], sel[QMAX]; int ne, nt, np = 0;
-    ((lst_build_t)0x4748a0)(dlg + 0x6b4, 0x1e, 0);           // idle officers of this city (same list the executor picker uses)
-    ne = lst_items(dlg + 0x6b4, ex, QMAX); nt = lst_items(cand, tg, QMAX);
-    DWORD cur = *(DWORD *)(dlg + 0x12d4);                    // user's executor goes first
-    for (int i = 0; i < ne; i++) if (ex[i] == cur && i) { ex[i] = ex[0]; ex[0] = cur; }
-    memset(good, 0, sizeof good);
-    char taken[QMAX] = {0};                                   // pre-check a feasible set: one idle officer per target
-    for (int t = 0; t < nt; t++) for (int e = 0; e < ne; e++) if (!taken[e] && verdict(ex[e], tg[t]) == 1) {
-        taken[e] = 1; pre[np++] = tg[t];
-        if (tg[t] >= OFF_BASE && tg[t] < OFF_BASE + OFF_N * OFF_SIZE) good[(tg[t] - OFF_BASE) / OFF_SIZE] = 1;
-        break;
-    }
-    int n = multi_pick(cand, pre, np, ne < nt ? ne : nt, msg, help, sel);
-    // assign executors: advisor-approved first, then any idle officer left
-    char used[QMAX] = {0}; rec_n = 0;
-    for (int pass = 0; pass < 2; pass++)
-        for (int t = 0; t < n; t++) {
-            int done = 0; for (int k = 0; k < rec_n; k++) if (rec_pair_t[k] == sel[t]) done = 1;
-            if (done) continue;
-            for (int e = 0; e < ne; e++) if (!used[e] && (pass || verdict(ex[e], sel[t]) == 1)) {
-                used[e] = 1; rec_pair_e[rec_n] = ex[e]; rec_pair_t[rec_n] = sel[t]; rec_n++; break;
-            }
-        }
-    LOG("recruit multi-pick cand=%d idle=%d pre=%d picked=%d pairs=%d", nt, ne, np, n, rec_n);
-    if (rec_n <= 0) return 0;
-    *(DWORD *)out = rec_pair_t[0]; *(DWORD *)(dlg + 0x12d4) = rec_pair_e[0];
-    *(DWORD *)(argp + 0x30) = rec_pair_e[0];   // caller cached the old executor in its [esp+0x18] for the advisor line
+// recruit: executor picker call at 0x4f5b4e -> multi-select; every picked officer recruits the dialog's target
+static int epick_multi(DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help) {
+    DWORD c[QMAX], pre[QMAX], sel[QMAX]; int nc = lst_items(cand, c, QMAX), np = 0;
+    DWORD tg = *(DWORD *)(dlg + 0x12d8);
+    for (int i = 0; i < nc; i++) if (tg && verdict(c[i], tg) == 1) pre[np++] = c[i];
+    int n = multi_pick(cand, pre, np, nc, msg, help, sel);
+    LOG("recruit executor multi-pick tgt=%lx cand=%d pre=%d picked=%d", tg, nc, np, n);
+    if (n <= 0) return 0;
+    rec_n = n; if (tg) rec_tgt = tg;
+    for (int k = 0; k < n; k++) rec_pair_e[k] = sel[k];
+    *(DWORD *)out = sel[0];
     return 1;
 }
 __asm__(".globl _xpick_detour\n_xpick_detour:\n"
         " pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n"
         " pushl 24(%esp)\n pushl %esi\n call _xpick_wrap\n addl $32,%esp\n ret\n");
-__asm__(".globl _tpick_detour\n_tpick_detour:\n leal 4(%esp),%eax\n pushl %eax\n"
-        " pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n"
-        " pushl 28(%esp)\n pushl %esi\n call _tpick_wrap\n addl $36,%esp\n ret\n");
-extern void xpick_detour(void); extern void tpick_detour(void);
+extern void xpick_detour(void);
 // city-menu CreateCommand slots: recruit 0x4cef10 (vtable 0x61a030+0x28), explore 0x4ce910 (0x619fd0+0x28)
 typedef DWORD (__attribute__((thiscall)) *mk_t)(DWORD);
 static DWORD next_queued(DWORD self, int kind) {              // build the next queued command without a dialog
@@ -329,9 +315,9 @@ static void start_queue(DWORD self, int kind) {
 DWORD __attribute__((cdecl, used)) mkrec_wrap(DWORD self, DWORD ret) {
     DWORD c = next_queued(self, 1);
     if (c) return c;
-    q_n = q_i = 0; rec_n = 0;
+    q_n = q_i = 0; rec_n = 0; rec_tgt = 0;
     c = ((mk_t)0x4cef10)(self);
-    if (c && rec_n > 1) { for (int k = 1; k < rec_n; k++) { q_exec[q_n] = rec_pair_e[k]; q_tgt[q_n] = rec_pair_t[k]; q_n++; } start_queue(self, 1); }
+    if (c && rec_n > 1 && rec_tgt) { for (int k = 1; k < rec_n; k++) { q_exec[q_n] = rec_pair_e[k]; q_tgt[q_n] = rec_tgt; q_n++; } start_queue(self, 1); }
     rec_n = 0;
     return c;
 }
@@ -380,7 +366,6 @@ static void hook_cs(void) {
 }
 
 // ================= 個人/各 tab cell text: Officer::GetCellText(CString *out, int col) at 0x454940 (thiscall, ret 8) =================
-typedef void (__attribute__((thiscall)) *csasg_t)(DWORD, const char *);
 static void patch_header(void);
 static BYTE tramp5[24]; static int cellcol = -1;
 static int cellcol_ok(void) { return cellcol >= 0; }   // cellcol: column id that displays 相性 (-1 = off)
@@ -472,39 +457,8 @@ SPICK_STUB(7)
 SPICK_STUB(8)
 SPICK_STUB(9)
 
-int __attribute__((cdecl, used)) dpick_wrap(int kind, DWORD dlg, DWORD ret, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6, DWORD argp) {
-    DWORD ex[QMAX], tg[QMAX], pre[QMAX], sel[QMAX]; int ne, nt, np = 0;
-    ((lst_build_t)0x4748a0)(dlg + 0x6b4, 0x1d, 0);            // own idle officers (same list the executor picker uses)
-    ne = lst_items(dlg + 0x6b4, ex, QMAX); nt = lst_items(cand, tg, QMAX);
-    DWORD cur = *(DWORD *)(dlg + 0x1408);
-    for (int i = 0; i < ne; i++) if (ex[i] == cur && i) { ex[i] = ex[0]; ex[0] = cur; }
-    memset(good, 0, sizeof good);
-    char taken[QMAX] = {0};
-    for (int t = 0; t < nt; t++) for (int e = 0; e < ne; e++) if (!taken[e] && verdict_sch(kind, ex[e], tg[t], 0) == 1) {
-        taken[e] = 1; pre[np++] = tg[t];
-        if (tg[t] >= OFF_BASE && tg[t] < OFF_BASE + OFF_N * OFF_SIZE) good[(tg[t] - OFF_BASE) / OFF_SIZE] = 1;
-        break;
-    }
-    int n = multi_pick(cand, pre, np, ne < nt ? ne : nt, msg, help, sel);
-    char used[QMAX] = {0}; rec_n = 0;
-    for (int pass = 0; pass < 2; pass++)
-        for (int t = 0; t < n; t++) {
-            int done = 0; for (int k = 0; k < rec_n; k++) if (rec_pair_t[k] == sel[t]) done = 1;
-            if (done) continue;
-            for (int e = 0; e < ne; e++) if (!used[e] && (pass || verdict_sch(kind, ex[e], sel[t], 0) == 1)) {
-                used[e] = 1; rec_pair_e[rec_n] = ex[e]; rec_pair_t[rec_n] = sel[t]; rec_n++; break;
-            }
-        }
-    LOG("scheme %d pair-pick cand=%d idle=%d pre=%d picked=%d pairs=%d", kind, nt, ne, np, n, rec_n);
-    if (rec_n <= 0) return 0;
-    *(DWORD *)out = rec_pair_t[0]; *(DWORD *)(dlg + 0x1408) = rec_pair_e[0];
-    *(DWORD *)(argp + 0x30) = rec_pair_e[0];
-    return 1;
-}
-__asm__(".globl _dpick6_detour\n_dpick6_detour:\n leal 4(%esp),%eax\n pushl %eax\n"
-        " pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n pushl 28(%esp)\n"
-        " pushl 28(%esp)\n pushl %esi\n pushl $6\n call _dpick_wrap\n addl $40,%esp\n ret\n");
-extern void dpick6_detour(void);
+SPICK_STUB(6)
+
 DWORD __attribute__((cdecl, used)) mksch_wrap(int kind, DWORD self, DWORD factory) {
     DWORD c = 0;
     if (q_kind == kind && q_i < q_n) {                        // queued extra command
@@ -514,13 +468,8 @@ DWORD __attribute__((cdecl, used)) mksch_wrap(int kind, DWORD self, DWORD factor
         LOG("queued cmd %d/%d kind=%d exec=%lx tgt=%lx", i + 1, q_n, kind, q_exec[i], q_tgt[i]);
         return (DWORD)p;
     }
-    q_n = q_i = 0; sel_n = 0; if (kind == 6) rec_n = 0;
+    q_n = q_i = 0; sel_n = 0;
     c = ((mk_t)factory)(self);
-    if (kind == 6) {
-        if (c && rec_n > 1) { for (int k = 1; k < rec_n; k++) { q_exec[q_n] = rec_pair_e[k]; q_tgt[q_n] = rec_pair_t[k]; q_tgt2[q_n] = 0; q_n++; } start_queue(self, 6); }
-        rec_n = 0;
-        return c;
-    }
     if (c && sel_n > 1) {
         DWORD tg = *(DWORD *)(c + 0x40), tg2 = SCH[kind].tgt2off ? *(DWORD *)(c + 0x44) : 0;
         if (kind >= 7) { tg = pk_tg; tg2 = pk_tg2; }
@@ -557,7 +506,7 @@ static void hook_recruit_marks(void) {
     VirtualProtect(f, 8, PAGE_EXECUTE_READWRITE, &o);
     f[0] = 0xe9; *(DWORD *)(f + 1) = (DWORD)name_detour - (DWORD)(f + 5); f[5] = f[6] = f[7] = 0x90;
     VirtualProtect(f, 8, o, &o);
-    patch_call(0x4f5ad0, tpick_detour);  // 登庸 target picker -> multi-select
+    patch_call(0x4f5ad0, pick_detour);  // 登庸 target picker -> multi-select
     patch_call(0x4f5b4e, pick_detour);   // 登庸 executor picker (single, ◎ marks)
     patch_call(0x4f4ea4, xpick_detour);  // 探索 executor picker -> multi-select
     patch_call_to(0x4f4e11, 0x4f4980, rpick_detour);   // explore region picker
@@ -575,7 +524,7 @@ static void hook_recruit_marks(void) {
     set_vslot(0x61a0b8, 0x4cf520, mksch4_detour);       // 燒夷 CreateCommand
     patch_call_to(0x4ea44b, 0x57da10, spick5_detour);   // 流言 executor picker -> multi-select
     set_vslot(0x619f08, 0x4cd3f0, mksch5_detour);       // 流言 CreateCommand
-    patch_call_to(0x4e96ad, 0x57da10, dpick6_detour);   // 離間 target picker -> multi-select + auto executors
+    patch_call_to(0x4e972b, 0x57da10, spick6_detour);   // 離間 target picker -> multi-select + auto executors
     set_vslot(0x619ed8, 0x4cd020, mksch6_detour);       // 離間 CreateCommand
     patch_call_to(0x4e464b, 0x57da10, spick7_detour);   // 勸降 executor picker
     set_vslot(0x619ce0, 0x4ca2a0, mksch7a_detour); set_vslot(0x61948c, 0x4b3ad0, mksch7b_detour);
