@@ -1,10 +1,10 @@
 # 三國志9 威力加強版：多人指令補丁 (san9pk-multi-officer-patch)
 
 Steam 版《三國志IX with 威力加強版》(San9WPK.exe **v1.2.0.0**，繁體中文) 的非官方補丁。
-讓同一個指令可以一次派多名武將，並把「軍師說可以」的武將排在最前面、預先勾選。
+讓同一個指令可以一次派多名武將，並把「軍師說可以」的武將排在最前面。
 
 > English: unofficial patch for Steam *Romance of the Three Kingdoms IX with Power Up Kit* (v1.2.0.0, Traditional Chinese).
-> One command can dispatch several officers at once; officers the advisor says will succeed are sorted first and pre-checked.
+> One command can dispatch several officers at once; officers the advisor says will succeed are sorted first.
 
 ## 功能
 
@@ -13,7 +13,7 @@ Steam 版《三國志IX with 威力加強版》(San9WPK.exe **v1.2.0.0**，繁�
 | 多人探索、登庸 | 選執行武將時改成多選列表，一次派多人 |
 | 多人計謀：離間、燒夷、奪取、流言 | 同上 |
 | 多人外交：贈與、請求、勸降 | 同上（贈與每人各送一份同額禮物） |
-| 軍師說可以的排最前面 | 軍師預估「可成」的武將自動排在列表最前、預先打勾 |
+| 軍師說可以的排最前面 | 軍師預估「可成」的武將自動排在列表最前 |
 | ◎ 醒目提示 | 探索地域、登庸/離間對象、各指令執行武將中，軍師說可成者名字後面加 ◎ |
 | 顯示相性 | 武將情報標題顯示「相性NN」；選擇武將的「個人」分頁最後一欄改為相性 |
 

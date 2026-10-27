@@ -240,7 +240,6 @@ static int multi_pick(DWORD cand, DWORD *pre, int npre, int maxsel, DWORD msg, D
     patch_header();
     static __attribute__((aligned(16))) BYTE outl[0x40];
     ((lst_ctor_t)0x476190)(outl);
-    for (int i = 0; i < npre; i++) ((lst_add_t)0x473de0)(outl, pre[i]);
     {   // advisor-approved rows first: stable-partition the candidate list's data pointers in place
         DWORD *nd[256]; DWORD d[256], p1[256]; int n = 0, k = 0;
         for (DWORD *x = *(DWORD **)(cand + 4); x && n < 256; x = (DWORD *)x[0]) { nd[n] = x; d[n++] = x[2]; }
