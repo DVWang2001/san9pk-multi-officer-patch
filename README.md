@@ -52,8 +52,8 @@ build.bat
 詳見 `tests/README.md`。快照檔（約 170 MB）不在倉庫裡，需要自己在遊戲中產生：
 
 ```
-python tests	ake_snapshot.py                              (需要 Python + pywin32，會啟動遊戲載入第 12 格存檔)
-powershell -ExecutionPolicy Bypass -File testsun_tests.ps1   (約 10 秒，顯示 ALL PASS 或 FAILED)
+python tests/take_snapshot.py                                (需要 Python + pywin32，會啟動遊戲載入第 12 格存檔)
+powershell -ExecutionPolicy Bypass -File tests/run_tests.ps1   (約 10 秒，顯示 ALL PASS 或 FAILED)
 ```
 
 ## 運作原理（簡述）
