@@ -618,12 +618,13 @@ __asm__(".globl _rpick_detour\n_rpick_detour:\n pushl 8(%esp)\n pushl 8(%esp)\n 
 extern void rpick_detour(void);
 // column-text assign in the region list (call CString::operator=(const char*) at 0x43bcbd): src == region+0x20 -> name cell
 void __attribute__((cdecl, used)) asg_wrap(DWORD cs, const char *src) {
-    ((csasg_t)0x5c5fb0)(cs, src);
-    if (!marking_rg) return;
     DWORD a = (DWORD)src - 0x20; int i = -1;
-    if (a >= RG_BASE && a < RG_BASE + RG_N * RG_SIZE && (a - RG_BASE) % RG_SIZE == 0) i = (a - RG_BASE) / RG_SIZE;
-    else if (a >= CT_BASE && a < CT_BASE + CT_N * CT_SIZE && (a - CT_BASE) % CT_SIZE == 0) i = RG_N + (a - CT_BASE) / CT_SIZE;
-    if (i >= 0 && rgood[i]) ((cscat_t)0x5c6110)(cs, "\xa1\xb7");
+    if (marking_rg) {
+        if (a >= RG_BASE && a < RG_BASE + RG_N * RG_SIZE && (a - RG_BASE) % RG_SIZE == 0) i = (a - RG_BASE) / RG_SIZE;
+        else if (a >= CT_BASE && a < CT_BASE + CT_N * CT_SIZE && (a - CT_BASE) % CT_SIZE == 0) i = RG_N + (a - CT_BASE) / CT_SIZE;
+    }
+    if (i >= 0 && rgood[i] && strlen(src) <= 6) { char b[16]; sprintf(b, "\xa1\xb7%s", src); ((csasg_t)0x5c5fb0)(cs, b); }   // ◎ goes in front of the name
+    else ((csasg_t)0x5c5fb0)(cs, src);
 }
 __asm__(".globl _asg_detour\n_asg_detour:\n pushl 4(%esp)\n pushl %ecx\n call _asg_wrap\n addl $8,%esp\n ret $4\n");
 extern void asg_detour(void);
