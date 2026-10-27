@@ -137,6 +137,7 @@ static volatile int marking;           // picker open -> name getter appends a m
 typedef void (__attribute__((thiscall)) *ctor_t)(void *, int, DWORD, DWORD);
 typedef int  (__attribute__((thiscall)) *adv_t)(void *, int);
 typedef void (__attribute__((thiscall)) *dtor_t)(void *);
+static int last_q;
 static int verdict(DWORD exec, DWORD tgt) {     // 1 good, 0 bad, -1 error; runs the game's own advisor with show=0
     static __attribute__((aligned(16))) BYTE ctx[0x400];
     int r = -1;
@@ -147,6 +148,7 @@ static int verdict(DWORD exec, DWORD tgt) {     // 1 good, 0 bad, -1 error; runs
     ((dtor_t)0x49b570)(ctx);
     probing = 0;
     r = q == 1 ? 1 : q == 3 ? 0 : -1;
+    last_q = q;
     return r;
 }
 static void fill_good(DWORD dlg, int picking_exec) {
@@ -163,6 +165,7 @@ static void fill_good(DWORD dlg, int picking_exec) {
 typedef int (__attribute__((cdecl)) *pick_t)(DWORD, DWORD, DWORD, DWORD, DWORD, DWORD);
 static int epick_multi(DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help);
 static int lst_items(DWORD l, DWORD *out, int max);
+static int mark_targets(DWORD dlg, int ltype, int kind, DWORD cur, DWORD *c, int nc, DWORD *pre, DWORD *pre2, int *np2);
 static void sort_front(DWORD cand, DWORD *pre, int npre);
 static DWORD rec_tgt;                                         // recruit target chosen in the dialog (for the queued extra executors)
 int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6) {
@@ -170,10 +173,11 @@ int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD
     patch_header();
     fill_good(dlg, picking_exec);
     if (picking_exec) return epick_multi(dlg, a1, a2, a3, a4);
-    {   // target picker: approved targets first
-        DWORD c[512], pre[512]; int nc = lst_items(a2, c, 512), np = 0;
-        for (int i = 0; i < nc; i++) if (c[i] >= OFF_BASE && c[i] < OFF_BASE + OFF_N * OFF_SIZE && good[(c[i] - OFF_BASE) / OFF_SIZE]) pre[np++] = c[i];
-        sort_front(a2, pre, np);
+    {   // target picker: a target is approved when ANY idle officer of this city would succeed; approved first
+        DWORD c[512], pre[512]; int nc = lst_items(a2, c, 512);
+        DWORD pre2[512]; int np2;
+        int np = mark_targets(dlg, 0x1e, 1, *(DWORD *)(dlg + 0x12d4), c, nc, pre, pre2, &np2);
+        sort_front(a2, pre, np); sort_front(a2, pre2, np2);   // order: OK for the current executor, then OK for someone else, then the rest
         LOG("target picker cand=%d approved=%d", nc, np);
     }
     marking = 1;
@@ -439,6 +443,20 @@ static int verdict_sch(int kind, DWORD exec, DWORD tgt, DWORD tgt2) {
     probing = 0;
     return q == 1 ? 1 : q == 3 ? 0 : -1;
 }
+// fills good[]/pre[] for the candidate targets c[]: approved if some idle officer (list type ltype at dlg+0x6b4) gets advisor "good"; kind 1 recruit, 6 離間
+static int mark_targets(DWORD dlg, int ltype, int kind, DWORD cur, DWORD *c, int nc, DWORD *pre, DWORD *pre2, int *np2) {
+    DWORD ex[512]; int np = 0; *np2 = 0;
+    ((lst_build_t)0x4748a0)(dlg + 0x6b4, ltype, 0);
+    int ne = lst_items(dlg + 0x6b4, ex, 512);
+    memset(good, 0, sizeof good);
+    for (int t = 0; t < nc; t++) for (int e = 0; e < ne; e++) if ((kind == 1 ? verdict(ex[e], c[t]) : verdict_sch(kind, ex[e], c[t], 0)) == 1) {
+        pre[np++] = c[t];
+        if (c[t] >= OFF_BASE && c[t] < OFF_BASE + OFF_N * OFF_SIZE) good[(c[t] - OFF_BASE) / OFF_SIZE] = 1;
+        break;
+    }
+    if (cur) for (int t = 0; t < np; t++) if ((kind == 1 ? verdict(cur, pre[t]) : verdict_sch(kind, cur, pre[t], 0)) == 1) pre2[(*np2)++] = pre[t];
+    return np;
+}
 int __attribute__((cdecl, used)) spick_wrap(int kind, DWORD dlg, DWORD ret, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6) {
     DWORD c[QMAX], pre[QMAX]; int nc = lst_items(cand, c, QMAX), np = 0;
     DWORD tg = *(DWORD *)(dlg + SCH[kind].tgtoff), tg2 = 0;
@@ -469,15 +487,11 @@ SPICK_STUB(9)
 SPICK_STUB(6)
 // 離間 target picker (single): executor at [dlg+0x1408]; approved targets first + ◎
 int __attribute__((cdecl, used)) tpick6_wrap(DWORD dlg, DWORD ret, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6) {
-    DWORD c[QMAX], pre[QMAX]; int nc = lst_items(cand, c, QMAX), np = 0;
-    DWORD ex = *(DWORD *)(dlg + 0x1408);
-    memset(good, 0, sizeof good);
-    for (int i = 0; i < nc; i++) if (ex && verdict_sch(6, ex, c[i], 0) == 1) {
-        pre[np++] = c[i];
-        if (c[i] >= OFF_BASE && c[i] < OFF_BASE + OFF_N * OFF_SIZE) good[(c[i] - OFF_BASE) / OFF_SIZE] = 1;
-    }
+    DWORD c[512], pre[512]; int nc = lst_items(cand, c, 512);
+    DWORD pre2[512]; int np2;
+    int np = mark_targets(dlg, 0x1d, 6, *(DWORD *)(dlg + 0x1408), c, nc, pre, pre2, &np2);
     patch_header();
-    sort_front(cand, pre, np);
+    sort_front(cand, pre, np); sort_front(cand, pre2, np2);
     marking = 1;
     int r = ((pick_t)0x57da10)(out, cand, msg, help, a5, a6);
     marking = 0;
