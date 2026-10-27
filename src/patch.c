@@ -162,12 +162,19 @@ static void fill_good(DWORD dlg, int picking_exec) {
 // patched call sites of the picker 0x57da10 inside the 登庸 dialog (esi = dialog at both sites)
 typedef int (__attribute__((cdecl)) *pick_t)(DWORD, DWORD, DWORD, DWORD, DWORD, DWORD);
 static int epick_multi(DWORD dlg, DWORD out, DWORD cand, DWORD msg, DWORD help);
-static DWORD rec_tgt;                                          // recruit target chosen in the dialog (for the queued extra executors)
+static int lst_items(DWORD l, DWORD *out, int max);
+static void sort_front(DWORD cand, DWORD *pre, int npre);
+static DWORD rec_tgt;                                         // recruit target chosen in the dialog (for the queued extra executors)
 int __attribute__((cdecl, used)) pick_wrap(DWORD dlg, DWORD ret, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6) {
     int picking_exec = (ret == 0x4f5b53);
     patch_header();
     fill_good(dlg, picking_exec);
     if (picking_exec) return epick_multi(dlg, a1, a2, a3, a4);
+    {   // target picker: approved targets first
+        DWORD c[64], pre[64]; int nc = lst_items(a2, c, 64), np = 0;
+        for (int i = 0; i < nc; i++) if (c[i] >= OFF_BASE && c[i] < OFF_BASE + OFF_N * OFF_SIZE && good[(c[i] - OFF_BASE) / OFF_SIZE]) pre[np++] = c[i];
+        sort_front(a2, pre, np);
+    }
     marking = 1;
     if (GetFileAttributesA("trace.on") != INVALID_FILE_ATTRIBUTES) {   // debug: who reads officer 242's name while the picker builds rows
         static int vh; if (!vh) { AddVectoredExceptionHandler(1, veh); vh = 1; }
@@ -243,17 +250,18 @@ static DWORD q_exec[QMAX], q_tgt[QMAX]; static int q_n, q_i, q_kind;   // kind 1
 static DWORD sel_exec[QMAX]; static int sel_n;                        // explore: officers checked in the multi picker
 static DWORD rec_pair_e[QMAX], rec_pair_t[QMAX]; static int rec_n;      // recruit: (executor, target) chosen at pick time
 static void patch_header(void);
+static void sort_front(DWORD cand, DWORD *pre, int npre) {   // advisor-approved rows first: stable-partition the candidate list's data pointers in place
+    DWORD *nd[256]; DWORD d[256], p1[256]; int n = 0, k = 0;
+    for (DWORD *x = *(DWORD **)(cand + 4); x && n < 256; x = (DWORD *)x[0]) { nd[n] = x; d[n++] = x[2]; }
+    for (int i = 0; i < n; i++) for (int j = 0; j < npre; j++) if (d[i] == pre[j]) { p1[k++] = d[i]; break; }
+    for (int i = 0; i < n; i++) { int in = 0; for (int j = 0; j < npre; j++) if (d[i] == pre[j]) in = 1; if (!in) p1[k++] = d[i]; }
+    for (int i = 0; i < n; i++) nd[i][2] = p1[i];
+}
 static int multi_pick(DWORD cand, DWORD *pre, int npre, int maxsel, DWORD msg, DWORD help, DWORD *sel) {
     patch_header();
     static __attribute__((aligned(16))) BYTE outl[0x40];
     ((lst_ctor_t)0x476190)(outl);
-    {   // advisor-approved rows first: stable-partition the candidate list's data pointers in place
-        DWORD *nd[256]; DWORD d[256], p1[256]; int n = 0, k = 0;
-        for (DWORD *x = *(DWORD **)(cand + 4); x && n < 256; x = (DWORD *)x[0]) { nd[n] = x; d[n++] = x[2]; }
-        for (int i = 0; i < n; i++) for (int j = 0; j < npre; j++) if (d[i] == pre[j]) { p1[k++] = d[i]; break; }
-        for (int i = 0; i < n; i++) { int in = 0; for (int j = 0; j < npre; j++) if (d[i] == pre[j]) in = 1; if (!in) p1[k++] = d[i]; }
-        for (int i = 0; i < n; i++) nd[i][2] = p1[i];
-    }
+    sort_front(cand, pre, npre);
     marking = 1;
     if (GetFileAttributesA("trace.on") != INVALID_FILE_ATTRIBUTES) {   // debug: who reads officer 242's record
         static int vh; if (!vh) { AddVectoredExceptionHandler(1, veh); vh = 1; }
@@ -458,6 +466,26 @@ SPICK_STUB(8)
 SPICK_STUB(9)
 
 SPICK_STUB(6)
+// 離間 target picker (single): executor at [dlg+0x1408]; approved targets first + ◎
+int __attribute__((cdecl, used)) tpick6_wrap(DWORD dlg, DWORD ret, DWORD out, DWORD cand, DWORD msg, DWORD help, DWORD a5, DWORD a6) {
+    DWORD c[QMAX], pre[QMAX]; int nc = lst_items(cand, c, QMAX), np = 0;
+    DWORD ex = *(DWORD *)(dlg + 0x1408);
+    memset(good, 0, sizeof good);
+    for (int i = 0; i < nc; i++) if (ex && verdict_sch(6, ex, c[i], 0) == 1) {
+        pre[np++] = c[i];
+        if (c[i] >= OFF_BASE && c[i] < OFF_BASE + OFF_N * OFF_SIZE) good[(c[i] - OFF_BASE) / OFF_SIZE] = 1;
+    }
+    patch_header();
+    sort_front(cand, pre, np);
+    marking = 1;
+    int r = ((pick_t)0x57da10)(out, cand, msg, help, a5, a6);
+    marking = 0;
+    return r;
+}
+__asm__(".globl _tpick6_detour\n_tpick6_detour:\n"
+        " pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n pushl 24(%esp)\n"
+        " pushl 24(%esp)\n pushl %esi\n call _tpick6_wrap\n addl $32,%esp\n ret\n");
+extern void tpick6_detour(void);
 
 DWORD __attribute__((cdecl, used)) mksch_wrap(int kind, DWORD self, DWORD factory) {
     DWORD c = 0;
@@ -524,7 +552,8 @@ static void hook_recruit_marks(void) {
     set_vslot(0x61a0b8, 0x4cf520, mksch4_detour);       // 燒夷 CreateCommand
     patch_call_to(0x4ea44b, 0x57da10, spick5_detour);   // 流言 executor picker -> multi-select
     set_vslot(0x619f08, 0x4cd3f0, mksch5_detour);       // 流言 CreateCommand
-    patch_call_to(0x4e972b, 0x57da10, spick6_detour);   // 離間 target picker -> multi-select + auto executors
+    patch_call_to(0x4e96ad, 0x57da10, tpick6_detour);   // 離間 target picker (single, sorted + ◎)
+    patch_call_to(0x4e972b, 0x57da10, spick6_detour);   // 離間 executor picker -> multi-select
     set_vslot(0x619ed8, 0x4cd020, mksch6_detour);       // 離間 CreateCommand
     patch_call_to(0x4e464b, 0x57da10, spick7_detour);   // 勸降 executor picker
     set_vslot(0x619ce0, 0x4ca2a0, mksch7a_detour); set_vslot(0x61948c, 0x4b3ad0, mksch7b_detour);
